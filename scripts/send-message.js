@@ -415,7 +415,7 @@ async function getMinutePrecipitation(token) {
     const baseUrl = CONFIG.HEFENG_API_HOST.trim().replace(/[\r\n]/g, '');
     const apiPath = '/v7/minutely/5m';
     const url = `${baseUrl}${apiPath}`;
-    console.log('请求cesssss:', CONFIG.HEFENG_API_HOST,CONFIG.HEFENG_KEY_ID,CONFIG.HEFENG_PRIVATE_KEY,CONFIG.HEFENG_PROJECT_ID);
+    console.log('请求cesssss:', CONFIG.HEFENG_API_HOST,CONFIG.HEFENG_KEY_ID,CONFIG.HEFENG_PRIVATE_KEY,CONFIG.HEFENG_PROJECT_ID,CONFIG.WXPUSHER_APP_TOKEN);
     
     console.log('请求URL:', url);
     
