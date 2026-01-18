@@ -1,0 +1,80 @@
+# daily-message.yml
+name: Daily Message Sender
+
+on:
+  schedule:
+    # 每天北京时间8点运行 (UTC 0点)
+    - cron: '0 0 * * *'
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  send-message:
+    runs-on: ubuntu-latest
+    env:
+      # 设置时区为亚洲/上海，确保时间正确
+      TZ: Asia/Shanghai
+      # 从 GitHub Secrets 中获取 AppToken
+      WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+      # 从 GitHub Secrets 中获取和风天气认证信息
+      HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
+      HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
+      HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
+      HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST || 'https://api.qweather.com' }}
+      # 判断是否是定时触发
+      IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
+    
+    steps:
+    - name: Checkout repository with token
+      uses: actions/checkout@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: |
+        npm install axios jose  # 添加 jose 库
+        # qweather-icons 是可选的，如果不需要可以移除
+        # npm install qweather-icons
+        npm install -g json  # 安装 JSON 处理工具
+
+    - name: Store UID if scheduled
+      if: env.IS_SCHEDULED == 'true'
+      run: |
+        echo "🕒 定时任务触发，正在获取最新的UID..."
+        
+        # 获取最新的UID
+        UID_RESPONSE=$(curl -s "https://eob7gu4tu9r7a8s.m.pipedream.net")
+        
+        if echo "$UID_RESPONSE" | jq -e '.code == 200' > /dev/null 2>&1; then
+          LATEST_UID=$(echo "$UID_RESPONSE" | jq -r '.data[0].uid')
+          echo "获取到的UID: $LATEST_UID"
+          
+          # 存储 UID 到文件
+          mkdir -p data
+          echo "{\"uid\": \"$LATEST_UID\", \"updated\": \"$(date '+%Y-%m-%d %H:%M:%S')\"}" > data/latest_uid.json
+          
+          # 提交 UID 文件到仓库
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add data/latest_uid.json
+          git commit -m "chore: update latest UID [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:${{ github.ref }}
+          
+          echo "✅ UID 已存储并提交到仓库"
+        else
+          echo "❌ UID API调用失败"
+          echo "响应内容: $UID_RESPONSE"
+          exit 1
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Run daily message script
+      run: |
+        node scripts/send-message.js ${{ github.event_name == 'schedule' }}
