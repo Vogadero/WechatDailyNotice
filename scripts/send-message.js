@@ -422,6 +422,7 @@ async function getMinutePrecipitation(token) {
       },
       timeout: 10000
     });
+    console.log('1212121',response)
     
     if (response.data.code === '200') {
       const data = response.data;
@@ -560,6 +561,7 @@ async function getWeatherAlerts(token) {
         timeout: 10000
       }
     );
+    console.log('34343434',response)
     
     if (response.data.metadata && !response.data.metadata.zeroResult && response.data.alerts) {
       const alerts = response.data.alerts.map(alert => {
