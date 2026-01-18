@@ -412,7 +412,7 @@ async function getMinutePrecipitation(token) {
   try {
     console.log('正在获取分钟级降水预报...');
     
-    const response = await axios.get(`${CONFIG.HEFENG_API_HOST}/v7/minutely/5m`, {
+    const response = await axios.get(`https://${CONFIG.HEFENG_API_HOST}/v7/minutely/5m`, {
       params: {
         location: `${CONFIG.LOCATION_LON},${CONFIG.LOCATION_LAT}`
       },
@@ -548,7 +548,7 @@ async function getWeatherAlerts(token) {
     console.log('正在获取天气预警信息...');
     
     const response = await axios.get(
-      `${CONFIG.HEFENG_API_HOST}/weatheralert/v1/current/${CONFIG.LOCATION_LAT}/${CONFIG.LOCATION_LON}`,
+      `https://${CONFIG.HEFENG_API_HOST}/weatheralert/v1/current/${CONFIG.LOCATION_LAT}/${CONFIG.LOCATION_LON}`,
       {
         params: {
           localTime: true
