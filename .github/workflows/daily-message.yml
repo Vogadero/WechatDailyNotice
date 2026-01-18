@@ -14,13 +14,6 @@ jobs:
     env:
       # 设置时区为亚洲/上海，确保时间正确
       TZ: Asia/Shanghai
-      # 从 GitHub Secrets 中获取 AppToken
-      WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
-      # 从 GitHub Secrets 中获取和风天气认证信息
-      HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
-      HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
-      HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
-      HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
       # 判断是否是定时触发
       IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
     
@@ -28,25 +21,99 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
       with:
-        # 重要：使用具有写权限的 token
-        token: ${{ secrets.PERSONAL_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
+        token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         fetch-depth: 0
 
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '24.5'
+        node-version: '24'
 
     - name: Install dependencies
       run: |
         npm install axios jose
         npm install -g json
 
-    - name: Run daily message script
+    # 新增：详细的环境变量调试
+    - name: Debug environment variables
       run: |
-        node scripts/send-message.js ${{ github.event_name == 'schedule' }}
+        echo "=== 环境变量调试开始 ==="
+        echo ""
+        
+        # 列出所有环境变量
+        echo "1. 列出所有环境变量:"
+        printenv | sort | grep -E '(HEFENG|WXPUSHER|GITHUB)' || echo "未找到相关环境变量"
+        echo ""
+        
+        # 检查特定环境变量是否存在
+        echo "2. 检查特定环境变量:"
+        for var in WXPUSHER_APP_TOKEN HEFENG_API_HOST HEFENG_KEY_ID HEFENG_PROJECT_ID; do
+          if [ -n "${!var}" ]; then
+            echo "   ✅ $var: 已设置 (长度: ${#!var})"
+          else
+            echo "   ❌ $var: 未设置"
+          fi
+        done
+        echo ""
+        
+        # 检查 HEFENG_PRIVATE_KEY 的特殊情况
+        echo "3. 检查 HEFENG_PRIVATE_KEY:"
+        if [ -n "$HEFENG_PRIVATE_KEY" ]; then
+          echo "   ✅ HEFENG_PRIVATE_KEY: 已设置"
+          echo "       长度: ${#HEFENG_PRIVATE_KEY}"
+          echo "       前50字符: ${HEFENG_PRIVATE_KEY:0:50}..."
+        else
+          echo "   ❌ HEFENG_PRIVATE_KEY: 未设置"
+        fi
+        echo ""
+        
+        # 验证 GitHub Secrets 引用
+        echo "4. 验证 GitHub Secrets 引用:"
+        echo "   IS_SCHEDULED: $IS_SCHEDULED"
+        echo "   GITHUB_EVENT_NAME: $GITHUB_EVENT_NAME"
+        echo ""
+        
+        # 测试环境变量传递给 Node.js
+        echo "5. 测试 Node.js 环境变量:"
+        node << 'EOF'
+        console.log('Node.js 环境变量测试:');
+        const envVars = ['WXPUSHER_APP_TOKEN', 'HEFENG_API_HOST', 'HEFENG_KEY_ID', 'HEFENG_PROJECT_ID', 'HEFENG_PRIVATE_KEY'];
+        envVars.forEach(varName => {
+          const value = process.env[varName];
+          if (value) {
+            console.log(`✅ ${varName}: 已设置 (长度: ${value.length})`);
+            if (varName === 'HEFENG_PRIVATE_KEY') {
+              console.log(`   开始部分: ${value.substring(0, 50)}...`);
+            }
+          } else {
+            console.log(`❌ ${varName}: 未设置`);
+          }
+        });
+        EOF
+        echo ""
+        echo "=== 环境变量调试结束 ==="
 
-    # 新增：提交 data 文件夹的变更到 Git
+    - name: Run daily message script
+      env:
+        # 明确在这里再次设置环境变量
+        WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+        HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
+        HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
+        HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
+        HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
+      run: |
+        echo "=== 运行主脚本 ==="
+        echo "传递的环境变量:"
+        echo "WXPUSHER_APP_TOKEN 长度: ${#WXPUSHER_APP_TOKEN}"
+        echo "HEFENG_API_HOST: ${HEFENG_API_HOST:0:30}..."
+        echo "HEFENG_KEY_ID: $HEFENG_KEY_ID"
+        echo "HEFENG_PROJECT_ID: $HEFENG_PROJECT_ID"
+        echo "HEFENG_PRIVATE_KEY 长度: ${#HEFENG_PRIVATE_KEY}"
+        
+        # 运行脚本，将 IS_SCHEDULED 作为参数传递
+        node scripts/send-message.js $IS_SCHEDULED
+
+    # 提交 data 文件夹的变更到 Git
     - name: Commit and push data files
       if: always()
       run: |
@@ -64,7 +131,7 @@ jobs:
           git add data/
           
           # 创建提交信息
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "$IS_SCHEDULED" = "true" ]; then
             COMMIT_MSG="chore: update data files [自动定时更新]"
           else
             COMMIT_MSG="chore: update data files [手动触发更新]"
