@@ -11,11 +11,10 @@ on:
 jobs:
   send-message:
     runs-on: ubuntu-latest
-    env:
-      # 设置时区为亚洲/上海，确保时间正确
-      TZ: Asia/Shanghai
-      # 判断是否是定时触发
-      IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
+    permissions:
+      contents: write  # 需要这个权限来推送更改
+      actions: read
+      checks: write
     
     steps:
     - name: Checkout repository
@@ -34,88 +33,78 @@ jobs:
         npm install axios jose
         npm install -g json
 
-    # 新增：详细的环境变量调试
-    - name: Debug environment variables
-      run: |
-        echo "=== 环境变量调试开始 ==="
-        echo ""
-        
-        # 列出所有环境变量
-        echo "1. 列出所有环境变量:"
-        printenv | sort | grep -E '(HEFENG|WXPUSHER|GITHUB)' || echo "未找到相关环境变量"
-        echo ""
-        
-        # 检查特定环境变量是否存在
-        echo "2. 检查特定环境变量:"
-        for var in WXPUSHER_APP_TOKEN HEFENG_API_HOST HEFENG_KEY_ID HEFENG_PROJECT_ID; do
-          if [ -n "${!var}" ]; then
-            echo "   ✅ $var: 已设置 (长度: ${#!var})"
-          else
-            echo "   ❌ $var: 未设置"
-          fi
-        done
-        echo ""
-        
-        # 检查 HEFENG_PRIVATE_KEY 的特殊情况
-        echo "3. 检查 HEFENG_PRIVATE_KEY:"
-        if [ -n "$HEFENG_PRIVATE_KEY" ]; then
-          echo "   ✅ HEFENG_PRIVATE_KEY: 已设置"
-          echo "       长度: ${#HEFENG_PRIVATE_KEY}"
-          echo "       前50字符: ${HEFENG_PRIVATE_KEY:0:50}..."
-        else
-          echo "   ❌ HEFENG_PRIVATE_KEY: 未设置"
-        fi
-        echo ""
-        
-        # 验证 GitHub Secrets 引用
-        echo "4. 验证 GitHub Secrets 引用:"
-        echo "   IS_SCHEDULED: $IS_SCHEDULED"
-        echo "   GITHUB_EVENT_NAME: $GITHUB_EVENT_NAME"
-        echo ""
-        
-        # 测试环境变量传递给 Node.js
-        echo "5. 测试 Node.js 环境变量:"
-        node << 'EOF'
-        console.log('Node.js 环境变量测试:');
-        const envVars = ['WXPUSHER_APP_TOKEN', 'HEFENG_API_HOST', 'HEFENG_KEY_ID', 'HEFENG_PROJECT_ID', 'HEFENG_PRIVATE_KEY'];
-        envVars.forEach(varName => {
-          const value = process.env[varName];
-          if (value) {
-            console.log(`✅ ${varName}: 已设置 (长度: ${value.length})`);
-            if (varName === 'HEFENG_PRIVATE_KEY') {
-              console.log(`   开始部分: ${value.substring(0, 50)}...`);
-            }
-          } else {
-            console.log(`❌ ${varName}: 未设置`);
-          }
-        });
-        EOF
-        echo ""
-        echo "=== 环境变量调试结束 ==="
-
-    - name: Run daily message script
+    # 环境变量测试步骤
+    - name: Test environment variables
       env:
-        # 明确在这里再次设置环境变量
         WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
         HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
         HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
         HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
         HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
       run: |
+        echo "=== 测试环境变量 ==="
+        echo ""
+        
+        # 检查环境变量是否设置
+        test_vars=(
+          "WXPUSHER_APP_TOKEN"
+          "HEFENG_API_HOST"
+          "HEFENG_KEY_ID"
+          "HEFENG_PROJECT_ID"
+          "HEFENG_PRIVATE_KEY"
+        )
+        
+        all_set=true
+        for var in "${test_vars[@]}"; do
+          if [ -n "${!var}" ]; then
+            echo "✅ $var: 已设置"
+            # 显示部分信息（隐藏敏感数据）
+            if [ "$var" = "HEFENG_PRIVATE_KEY" ]; then
+              echo "   长度: ${#!var}"
+            fi
+          else
+            echo "❌ $var: 未设置"
+            all_set=false
+          fi
+        done
+        
+        echo ""
+        if [ "$all_set" = true ]; then
+          echo "✅ 所有环境变量都已设置"
+        else
+          echo "❌ 部分环境变量未设置"
+          echo "请检查 GitHub Secrets 是否已正确设置"
+          exit 1
+        fi
+
+    - name: Run daily message script
+      env:
+        # 在这里传递所有必需的环境变量
+        WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+        HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
+        HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
+        HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
+        HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
+        # 判断是否是定时触发
+        IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
+      run: |
         echo "=== 运行主脚本 ==="
         echo "传递的环境变量:"
         echo "WXPUSHER_APP_TOKEN 长度: ${#WXPUSHER_APP_TOKEN}"
-        echo "HEFENG_API_HOST: ${HEFENG_API_HOST:0:30}..."
+        echo "HEFENG_API_HOST: $HEFENG_API_HOST"
         echo "HEFENG_KEY_ID: $HEFENG_KEY_ID"
         echo "HEFENG_PROJECT_ID: $HEFENG_PROJECT_ID"
         echo "HEFENG_PRIVATE_KEY 长度: ${#HEFENG_PRIVATE_KEY}"
+        echo "IS_SCHEDULED: $IS_SCHEDULED"
         
-        # 运行脚本，将 IS_SCHEDULED 作为参数传递
+        # 运行脚本
         node scripts/send-message.js $IS_SCHEDULED
 
     # 提交 data 文件夹的变更到 Git
     - name: Commit and push data files
       if: always()
+      env:
+        PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
       run: |
         echo "📦 检查 data 文件夹是否有变更..."
         
@@ -127,24 +116,27 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
+          # 设置远程 URL 使用 token
+          git remote set-url origin https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/${{ github.repository }}
+          
           # 添加变更的文件
           git add data/
           
           # 创建提交信息
-          if [ "$IS_SCHEDULED" = "true" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
             COMMIT_MSG="chore: update data files [自动定时更新]"
           else
             COMMIT_MSG="chore: update data files [手动触发更新]"
           fi
           
           # 提交
-          git commit -m "$COMMIT_MSG"
+          git commit -m "$COMMIT_MSG" || echo "提交失败或无变更"
           
           # 推送
           echo "🚀 推送变更到仓库..."
-          git push origin HEAD:${{ github.ref }}
+          git push origin HEAD:${{ github.ref }} || echo "推送失败"
           
-          echo "✅ data 文件夹变更已提交到仓库"
+          echo "✅ data 文件夹变更尝试提交完成"
         else
           echo "✅ data 文件夹无变更，无需提交"
         fi
