@@ -1,0 +1,42 @@
+# .github/workflows/test-config.yml
+name: Test Hefeng Configuration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
+      HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
+      HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
+      HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: |
+        npm install axios
+
+    - name: Test configuration
+      run: |
+        echo "=== 环境变量原始值 ==="
+        echo "HEFENG_API_HOST 原始值: '$HEFENG_API_HOST'"
+        echo "长度: ${#HEFENG_API_HOST}"
+        echo ""
+        
+        # 显示所有字符（包括不可见字符）
+        echo "=== 显示所有字符 ==="
+        echo -n "HEFENG_API_HOST: " && echo "$HEFENG_API_HOST" | od -c | head -5
+        echo ""
+        
+        # 运行测试脚本
+        node scripts/test-hefeng-config.js
