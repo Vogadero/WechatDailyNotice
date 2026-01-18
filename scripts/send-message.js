@@ -816,7 +816,6 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
                  <span style="margin-right: 15px;">📚 ${hitokotoData.type}</span>
                  <span>📖 ${hitokotoData.from}</span>
                </div>
-               <div>${dayOfWeek}</div>
              </div>
            </div>`;
   

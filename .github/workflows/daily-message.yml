@@ -20,21 +20,22 @@ jobs:
       HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
       HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
       HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
-      HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST || 'https://api.qweather.com' }}
+      HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
       # 判断是否是定时触发
       IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
     
     steps:
-    - name: Checkout repository with token
+    - name: Checkout repository
       uses: actions/checkout@v3
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        # 重要：使用具有写权限的 token
+        token: ${{ secrets.PERSONAL_ACCESS_TOKEN || secrets.GITHUB_TOKEN }}
         fetch-depth: 0
 
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '24'  # 升级到 Node.js 24
+        node-version: '24.5'
 
     - name: Install dependencies
       run: |
@@ -46,8 +47,8 @@ jobs:
         node scripts/send-message.js ${{ github.event_name == 'schedule' }}
 
     # 新增：提交 data 文件夹的变更到 Git
-    - name: Commit data files
-      if: always()  # 即使主脚本失败也执行这一步
+    - name: Commit and push data files
+      if: always()
       run: |
         echo "📦 检查 data 文件夹是否有变更..."
         
@@ -55,9 +56,9 @@ jobs:
         if git status --porcelain data/ | grep -q .; then
           echo "🔄 检测到 data 文件夹有变更，提交到 Git..."
           
-          # 配置 Git
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # 配置 Git 用户信息
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
           
           # 添加变更的文件
           git add data/
@@ -80,5 +81,3 @@ jobs:
         else
           echo "✅ data 文件夹无变更，无需提交"
         fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
