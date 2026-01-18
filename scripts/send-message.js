@@ -192,7 +192,7 @@ function getStoredUid() {
     const uidPath = path.join(__dirname, '../data/latest_uid.json');
     if (fs.existsSync(uidPath)) {
       const data = JSON.parse(fs.readFileSync(uidPath, 'utf8'));
-      console.log(`📁 从本地文件读取UID: ${data.uid} (更新时间: ${data.updated})`);
+      console.log(`📁 从本地文件读取UID: ${data.uid} (更新时间: ${data.updated}, 触发方式: ${data.trigger || '未知'})`);
       return {
         success: true,
         uid: data.uid
@@ -207,18 +207,10 @@ function getStoredUid() {
   };
 }
 
-// 获取最新的UID（仅在定时任务时调用）
+// 获取最新的UID（现在无论定时还是手动都存储）
 async function getLatestUid() {
   try {
-    if (!isScheduled) {
-      console.log('⏰ 手动触发，尝试从存储获取UID...');
-      const storedUid = getStoredUid();
-      if (storedUid.success) {
-        return storedUid;
-      }
-      console.log('未找到存储的UID，将尝试调用API获取');
-    }
-    
+    // 无论是否定时触发，都尝试获取最新UID
     console.log('正在获取最新的UID...');
     const response = await axios.get(CONFIG.UID_API, {
       timeout: 10000
@@ -228,25 +220,24 @@ async function getLatestUid() {
       const latestUid = response.data.data[0].uid;
       console.log(`获取到的UID: ${latestUid}`);
       
-      // 存储到文件（只在定时任务时存储）
-      if (isScheduled) {
-        try {
-          const dataDir = path.join(__dirname, '../data');
-          if (!fs.existsSync(dataDir)) {
-            fs.mkdirSync(dataDir, { recursive: true });
-          }
-          const uidData = {
-            uid: latestUid,
-            updated: new Date().toISOString()
-          };
-          fs.writeFileSync(
-            path.join(dataDir, 'latest_uid.json'),
-            JSON.stringify(uidData, null, 2)
-          );
-          console.log('✅ UID已存储到本地文件');
-        } catch (error) {
-          console.error('存储UID到文件失败:', error.message);
+      // 存储到文件（现在无论定时还是手动都存储）
+      try {
+        const dataDir = path.join(__dirname, '../data');
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
         }
+        const uidData = {
+          uid: latestUid,
+          updated: new Date().toISOString(),
+          trigger: isScheduled ? 'scheduled' : 'manual'
+        };
+        fs.writeFileSync(
+          path.join(dataDir, 'latest_uid.json'),
+          JSON.stringify(uidData, null, 2)
+        );
+        console.log(`✅ UID已存储到本地文件 (触发方式: ${isScheduled ? '定时任务' : '手动触发'})`);
+      } catch (error) {
+        console.error('存储UID到文件失败:', error.message);
       }
       
       return {
@@ -257,9 +248,10 @@ async function getLatestUid() {
       throw new Error('UID API返回数据格式异常');
     }
   } catch (error) {
-    console.error('获取UID失败:', error.message);
+    console.error('获取最新UID失败:', error.message);
     
     // 尝试从存储获取
+    console.log('尝试从本地存储获取UID...');
     const storedUid = getStoredUid();
     if (storedUid.success) {
       return storedUid;

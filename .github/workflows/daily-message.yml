@@ -34,47 +34,51 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '24.5.0'
+        node-version: '24'  # 升级到 Node.js 24
 
     - name: Install dependencies
       run: |
-        npm install axios jose  # 添加 jose 库
-        # qweather-icons 是可选的，如果不需要可以移除
-        # npm install qweather-icons
-        npm install -g json  # 安装 JSON 处理工具
-
-    - name: Store UID if scheduled
-      if: env.IS_SCHEDULED == 'true'
-      run: |
-        echo "🕒 定时任务触发，正在获取最新的UID..."
-        
-        # 获取最新的UID
-        UID_RESPONSE=$(curl -s "https://eob7gu4tu9r7a8s.m.pipedream.net")
-        
-        if echo "$UID_RESPONSE" | jq -e '.code == 200' > /dev/null 2>&1; then
-          LATEST_UID=$(echo "$UID_RESPONSE" | jq -r '.data[0].uid')
-          echo "获取到的UID: $LATEST_UID"
-          
-          # 存储 UID 到文件
-          mkdir -p data
-          echo "{\"uid\": \"$LATEST_UID\", \"updated\": \"$(date '+%Y-%m-%d %H:%M:%S')\"}" > data/latest_uid.json
-          
-          # 提交 UID 文件到仓库
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add data/latest_uid.json
-          git commit -m "chore: update latest UID [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:${{ github.ref }}
-          
-          echo "✅ UID 已存储并提交到仓库"
-        else
-          echo "❌ UID API调用失败"
-          echo "响应内容: $UID_RESPONSE"
-          exit 1
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        npm install axios jose
+        npm install -g json
 
     - name: Run daily message script
       run: |
         node scripts/send-message.js ${{ github.event_name == 'schedule' }}
+
+    # 新增：提交 data 文件夹的变更到 Git
+    - name: Commit data files
+      if: always()  # 即使主脚本失败也执行这一步
+      run: |
+        echo "📦 检查 data 文件夹是否有变更..."
+        
+        # 检查是否有文件变更
+        if git status --porcelain data/ | grep -q .; then
+          echo "🔄 检测到 data 文件夹有变更，提交到 Git..."
+          
+          # 配置 Git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          # 添加变更的文件
+          git add data/
+          
+          # 创建提交信息
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            COMMIT_MSG="chore: update data files [自动定时更新]"
+          else
+            COMMIT_MSG="chore: update data files [手动触发更新]"
+          fi
+          
+          # 提交
+          git commit -m "$COMMIT_MSG"
+          
+          # 推送
+          echo "🚀 推送变更到仓库..."
+          git push origin HEAD:${{ github.ref }}
+          
+          echo "✅ data 文件夹变更已提交到仓库"
+        else
+          echo "✅ data 文件夹无变更，无需提交"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
