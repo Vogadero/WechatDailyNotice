@@ -410,15 +410,6 @@ async function getWeatherForecast() {
 // 获取真实的分钟级降水预报
 async function getMinutePrecipitation(token) {
   try {
-    console.log('正在获取分钟级降水预报...');
-    // 再次确保 HEFENG_API_HOST 没有换行符
-    const baseUrl = CONFIG.HEFENG_API_HOST.trim().replace(/[\r\n]/g, '');
-    const apiPath = '/v7/minutely/5m';
-    const url = `${baseUrl}${apiPath}`;
-    console.log('请求cesssss:', CONFIG.HEFENG_API_HOST,CONFIG.HEFENG_KEY_ID,CONFIG.HEFENG_PRIVATE_KEY,CONFIG.HEFENG_PROJECT_ID,CONFIG.WXPUSHER_APP_TOKEN);
-    
-    console.log('请求URL:', url);
-    
     const response = await axios.get(`${CONFIG.HEFENG_API_HOST}/v7/minutely/5m`, {
       params: {
         location: `${CONFIG.LOCATION_LON},${CONFIG.LOCATION_LAT}`
@@ -429,7 +420,7 @@ async function getMinutePrecipitation(token) {
       },
       timeout: 10000
     });
-    
+    console.log('结果:', response);
     if (response.data.code === '200') {
       const data = response.data;
       
@@ -552,13 +543,6 @@ function getMockMinutePrecipitation() {
 // 获取真实的天气预警信息
 async function getWeatherAlerts(token) {
   try {
-    console.log('正在获取天气预警信息...');
-    const baseUrl = sanitizeApiHost(CONFIG.HEFENG_API_HOST);
-    const apiPath = `/weatheralert/v1/current/${CONFIG.LOCATION_LAT}/${CONFIG.LOCATION_LON}`;
-    const finalUrl = `${baseUrl}${apiPath}`;
-    
-    console.log('最终请求 URL:', finalUrl);
-    
     const response = await axios.get(
       `${CONFIG.HEFENG_API_HOST}/weatheralert/v1/current/${CONFIG.LOCATION_LAT}/${CONFIG.LOCATION_LON}`,
       {
