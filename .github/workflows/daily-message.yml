@@ -46,27 +46,44 @@ jobs:
         echo ""
         
         # 检查环境变量是否设置
-        test_vars=(
-          "WXPUSHER_APP_TOKEN"
-          "HEFENG_API_HOST"
-          "HEFENG_KEY_ID"
-          "HEFENG_PROJECT_ID"
-          "HEFENG_PRIVATE_KEY"
-        )
-        
         all_set=true
-        for var in "${test_vars[@]}"; do
-          if [ -n "${!var}" ]; then
-            echo "✅ $var: 已设置"
-            # 显示部分信息（隐藏敏感数据）
-            if [ "$var" = "HEFENG_PRIVATE_KEY" ]; then
-              echo "   长度: ${#!var}"
-            fi
-          else
-            echo "❌ $var: 未设置"
-            all_set=false
-          fi
-        done
+        
+        if [ -n "$WXPUSHER_APP_TOKEN" ]; then
+          echo "✅ WXPUSHER_APP_TOKEN: 已设置"
+        else
+          echo "❌ WXPUSHER_APP_TOKEN: 未设置"
+          all_set=false
+        fi
+        
+        if [ -n "$HEFENG_API_HOST" ]; then
+          echo "✅ HEFENG_API_HOST: 已设置"
+          echo "   值: $HEFENG_API_HOST"
+        else
+          echo "❌ HEFENG_API_HOST: 未设置"
+          all_set=false
+        fi
+        
+        if [ -n "$HEFENG_KEY_ID" ]; then
+          echo "✅ HEFENG_KEY_ID: 已设置"
+        else
+          echo "❌ HEFENG_KEY_ID: 未设置"
+          all_set=false
+        fi
+        
+        if [ -n "$HEFENG_PROJECT_ID" ]; then
+          echo "✅ HEFENG_PROJECT_ID: 已设置"
+        else
+          echo "❌ HEFENG_PROJECT_ID: 未设置"
+          all_set=false
+        fi
+        
+        if [ -n "$HEFENG_PRIVATE_KEY" ]; then
+          echo "✅ HEFENG_PRIVATE_KEY: 已设置"
+          echo "   长度: ${#HEFENG_PRIVATE_KEY}"
+        else
+          echo "❌ HEFENG_PRIVATE_KEY: 未设置"
+          all_set=false
+        fi
         
         echo ""
         if [ "$all_set" = true ]; then
