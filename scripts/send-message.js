@@ -51,17 +51,19 @@ function getCurrentTimeInfo() {
   const minute = String(now.getMinutes()).padStart(2, '0');
   const second = String(now.getSeconds()).padStart(2, '0');
   
-  const weekdays = ['星期天', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
+  const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const dayOfWeek = weekdays[now.getDay()];
   const dayOfWeekNum = now.getDay();
   
   return {
-    dateTime: `${year}年${month}月${day}日${dayOfWeek} ${hour}:${minute}:${second}`,
+    dateTime: `${year}/${month}/${day} ${dayOfWeek} ${hour}:${minute}`,
     dayOfWeek: dayOfWeek,
     dayOfWeekNum: dayOfWeekNum,
     isThursday: dayOfWeekNum === 4,
     hour: parseInt(hour),
-    timestamp: Math.floor(now.getTime() / 1000)
+    timestamp: Math.floor(now.getTime() / 1000),
+    simpleDate: `${month}月${day}日`,
+    time: `${hour}:${minute}`
   };
 }
 
@@ -207,20 +209,40 @@ function getStoredUid() {
   };
 }
 
-// 获取最新的UID（现在无论定时还是手动都存储）
+// 获取最新的UID（优化：只有定时任务时才调用API）
 async function getLatestUid() {
   try {
-    // 无论是否定时触发，都尝试获取最新UID
-    console.log('正在获取最新的UID...');
-    const response = await axios.get(CONFIG.UID_API, {
-      timeout: 10000
-    });
+    let latestUid;
+    let shouldUpdateFile = false;
     
-    if (response.data.code === 200 && response.data.data && response.data.data.length > 0) {
-      const latestUid = response.data.data[0].uid;
-      console.log(`获取到的UID: ${latestUid}`);
+    if (isScheduled) {
+      // 定时任务：从API获取最新UID
+      console.log('⏰ 定时任务，正在获取最新的UID...');
+      const response = await axios.get(CONFIG.UID_API, {
+        timeout: 10000
+      });
       
-      // 存储到文件（现在无论定时还是手动都存储）
+      if (response.data.code === 200 && response.data.data && response.data.data.length > 0) {
+        latestUid = response.data.data[0].uid;
+        console.log(`获取到的UID: ${latestUid}`);
+        shouldUpdateFile = true;
+      } else {
+        throw new Error('UID API返回数据格式异常');
+      }
+    } else {
+      // 手动触发：从本地存储读取
+      console.log('👆 手动触发，从本地存储读取UID...');
+      const storedUid = getStoredUid();
+      if (storedUid.success) {
+        latestUid = storedUid.uid;
+        shouldUpdateFile = false; // 手动触发不更新文件，但会存储（如果需要）
+      } else {
+        throw new Error('手动触发时未找到本地UID文件，请先运行一次定时任务');
+      }
+    }
+    
+    // 存储到文件（无论是定时还是手动都存储，记录触发方式）
+    if (latestUid) {
       try {
         const dataDir = path.join(__dirname, '../data');
         if (!fs.existsSync(dataDir)) {
@@ -229,7 +251,8 @@ async function getLatestUid() {
         const uidData = {
           uid: latestUid,
           updated: new Date().toISOString(),
-          trigger: isScheduled ? 'scheduled' : 'manual'
+          trigger: isScheduled ? 'scheduled' : 'manual',
+          source: isScheduled ? 'api' : 'local_storage'
         };
         fs.writeFileSync(
           path.join(dataDir, 'latest_uid.json'),
@@ -245,12 +268,17 @@ async function getLatestUid() {
         uid: latestUid
       };
     } else {
-      throw new Error('UID API返回数据格式异常');
+      throw new Error('无法获取UID');
     }
   } catch (error) {
     console.error('获取最新UID失败:', error.message);
     
-    // 尝试从存储获取
+    // 对于手动触发，如果读取本地文件失败，就直接失败
+    if (!isScheduled) {
+      throw new Error(`手动触发时获取UID失败: ${error.message}`);
+    }
+    
+    // 对于定时任务，尝试从存储获取
     console.log('尝试从本地存储获取UID...');
     const storedUid = getStoredUid();
     if (storedUid.success) {
@@ -283,7 +311,7 @@ async function getCurrentWeather() {
         );
         
         if (importantIndices.length > 0) {
-          lifeIndices = '<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 10px;">';
+          lifeIndices = '<div style="margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px;">';
           importantIndices.forEach(index => {
             const iconMap = {
               'comfort': '😌',
@@ -292,8 +320,8 @@ async function getCurrentWeather() {
               'uv': '☀️'
             };
             const icon = iconMap[index.key] || '📊';
-            lifeIndices += `<div style="color: #666; font-size: 12px; padding: 4px 8px; background-color: #f8f9fa; border-radius: 4px;">
-                              <strong>${icon} ${index.name}:</strong> ${index.level}
+            lifeIndices += `<div style="color: #666; font-size: 12px; padding: 3px 6px; background-color: #f5f5f5; border-radius: 12px; border: 1px solid #eee;">
+                              ${icon} ${index.name}: ${index.level}
                             </div>`;
           });
           lifeIndices += '</div>';
@@ -348,7 +376,7 @@ async function getWeatherForecast() {
     if (response.data.code === 200) {
       const data = response.data.data;
       
-      let forecastHTML = '<div style="display: flex; justify-content: space-between; gap: 8px; margin-top: 10px;">';
+      let forecastHTML = '<div style="display: flex; gap: 10px; margin-top: 12px;">';
       
       const dayNames = ['今天', '明天', '后天'];
       
@@ -372,17 +400,17 @@ async function getWeatherForecast() {
                             day.day_condition.includes('暴雨') ||
                             day.day_condition.includes('大雪');
         
-        const bgColor = isBadWeather ? '#fff0f0' : '#f8f9fa';
-        const borderColor = isBadWeather ? '#ffcccc' : '#e9ecef';
+        const bgColor = isBadWeather ? '#fff5f5' : '#fafafa';
+        const borderColor = isBadWeather ? '#ffd6d6' : '#eee';
         
-        forecastHTML += `<div style="flex: 1; background-color: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 6px; padding: 10px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                          <div style="font-weight: bold; color: #333; font-size: 14px; margin-bottom: 5px;">${dayNames[index]}</div>
-                          <div style="font-size: 24px; margin: 5px 0;">${dayIcon}</div>
-                          <div style="color: #ff6b35; font-weight: bold; font-size: 16px; margin-bottom: 3px;">
+        forecastHTML += `<div style="flex: 1; background-color: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 12px; text-align: center;">
+                          <div style="font-weight: 500; color: #333; font-size: 13px; margin-bottom: 6px;">${dayNames[index]}</div>
+                          <div style="font-size: 22px; margin: 6px 0;">${dayIcon}</div>
+                          <div style="color: #ff6b35; font-weight: 600; font-size: 15px; margin-bottom: 3px;">
                             ${day.max_temperature}°/${day.min_temperature}°
                           </div>
                           <div style="color: #666; font-size: 12px; margin-bottom: 2px;">${day.day_condition}</div>
-                          <div style="color: #999; font-size: 11px;">夜间: ${nightIcon} ${day.night_condition}</div>
+                          <div style="color: #999; font-size: 11px;">${nightIcon} ${day.night_condition}</div>
                         </div>`;
       });
       
@@ -420,7 +448,7 @@ async function getMinutePrecipitation(token) {
       },
       timeout: 10000
     });
-    console.log('结果:', response);
+    
     if (response.data.code === '200') {
       const data = response.data;
       
@@ -556,7 +584,6 @@ async function getWeatherAlerts(token) {
         timeout: 10000
       }
     );
-    console.log('34343434',response)
     
     if (response.data.metadata && !response.data.metadata.zeroResult && response.data.alerts) {
       const alerts = response.data.alerts.map(alert => {
@@ -679,16 +706,13 @@ async function getKfcContent(isThursday) {
       const kfcText = response.data.data.kfc;
       console.log('获取到的KFC文案:', kfcText);
       
-      const kfcContent = `<div style="background: linear-gradient(135deg, #ffcc00 0%, #ff6600 100%); border-radius: 8px; padding: 15px; margin: 15px 0; box-shadow: 0 2px 8px rgba(255, 102, 0, 0.3);">
-                            <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                              <span style="font-size: 24px; margin-right: 10px;">🍗</span>
-                              <h3 style="margin: 0; color: #fff; text-shadow: 1px 1px 2px rgba(0,0,0,0.2);">疯狂星期四</h3>
+      const kfcContent = `<div style="background: linear-gradient(135deg, #f5f5f5 0%, #fff 100%); border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; margin: 15px 0;">
+                            <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                              <span style="font-size: 20px; margin-right: 8px;">🍗</span>
+                              <h3 style="margin: 0; color: #d32f2f; font-size: 16px; font-weight: 600;">疯狂星期四</h3>
                             </div>
-                            <div style="background-color: rgba(255, 255, 255, 0.9); padding: 12px; border-radius: 6px; border-left: 4px solid #ff3300;">
-                              <p style="margin: 0; color: #333; line-height: 1.5; font-style: italic;">${kfcText}</p>
-                            </div>
-                            <div style="color: rgba(255, 255, 255, 0.8); font-size: 12px; text-align: right; margin-top: 8px;">
-                              #疯狂星期四 #KFC文案
+                            <div style="padding: 10px; border-radius: 6px; background-color: #fff;">
+                              <p style="margin: 0; color: #555; line-height: 1.5; font-size: 14px;">${kfcText}</p>
                             </div>
                           </div>`;
       
@@ -703,7 +727,7 @@ async function getKfcContent(isThursday) {
     console.error('获取KFC文案失败:', error.message);
     return {
       success: false,
-      content: '<div style="color: #999; font-style: italic; margin: 10px 0;">今天周四，但KFC文案获取失败...</div>'
+      content: '<div style="color: #999; font-style: italic; margin: 10px 0; font-size: 13px;">今天周四，但KFC文案获取失败...</div>'
     };
   }
 }
@@ -726,7 +750,7 @@ async function getHitokoto() {
       'c': '游戏',
       'd': '文学',
       'e': '原创',
-      'f': '来自网络',
+      'f': '网络',
       'g': '其他',
       'h': '影视',
       'i': '诗词',
@@ -797,127 +821,126 @@ async function sendMessage(htmlContent, summary, uid) {
   }
 }
 
-// 构建HTML内容
+// 构建HTML内容（现代化简约风格）
 function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, kfcContent) {
-  const { dateTime, dayOfWeek, isThursday } = timeInfo;
+  const { dateTime, dayOfWeek, isThursday, simpleDate, time } = timeInfo;
   
-  let html = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">`;
+  let html = `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif; max-width: 100%; margin: 0; background-color: #ffffff; color: #333; line-height: 1.5;">`;
   
-  // 头部 - 一言
-  html += `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px 20px; position: relative; overflow: hidden;">
-             <div style="position: absolute; top: -50px; right: -50px; width: 150px; height: 150px; background: rgba(255, 255, 255, 0.1); border-radius: 50%;"></div>
-             <div style="position: absolute; bottom: -30px; left: -30px; width: 100px; height: 100px; background: rgba(255, 255, 255, 0.08); border-radius: 50%;"></div>
-             <h1 style="margin: 0 0 15px 0; font-size: 26px; line-height: 1.4; position: relative; z-index: 1;">${hitokotoData.hitokoto}</h1>
-             <div style="display: flex; justify-content: space-between; font-size: 14px; opacity: 0.9; position: relative; z-index: 1;">
-               <div>
-                 <span style="margin-right: 15px;">📚 ${hitokotoData.type}</span>
-                 <span>📖 ${hitokotoData.from}</span>
-               </div>
+  // 头部 - 一言卡片
+  html += `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px 16px; margin-bottom: 16px; border-radius: 0 0 12px 12px; box-shadow: 0 2px 10px rgba(102, 126, 234, 0.2);">
+             <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+               <div style="font-size: 12px; opacity: 0.8; background: rgba(255,255,255,0.15); padding: 3px 8px; border-radius: 10px;">${hitokotoData.type}</div>
+               <div style="font-size: 12px; opacity: 0.8;">${simpleDate} ${dayOfWeek}</div>
              </div>
+             <div style="font-size: 16px; font-weight: 500; line-height: 1.4; margin-bottom: 10px;">${hitokotoData.hitokoto}</div>
+             <div style="font-size: 12px; opacity: 0.8; text-align: right;">—— ${hitokotoData.from}</div>
            </div>`;
   
-  // 主体内容
-  html += `<div style="padding: 20px;">`;
+  // 主体内容容器
+  html += `<div style="padding: 0 16px;">`;
   
-  // 日期时间
-  html += `<div style="text-align: center; margin-bottom: 20px; padding: 12px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e9ecef;">
-             <div style="font-size: 18px; color: #333; font-weight: 500; margin-bottom: 5px;">${dateTime}</div>
-             <div style="font-size: 14px; color: #6c757d;">${isScheduled ? '每日定时推送' : '手动触发推送'}</div>
+  // 时间信息
+  html += `<div style="text-align: center; margin-bottom: 20px; color: #666; font-size: 12px; padding: 8px; background: #f9f9f9; border-radius: 8px;">
+             <div style="display: flex; justify-content: center; align-items: center; gap: 8px;">
+               <span style="color: #667eea;">⏰</span>
+               <span>${time}</span>
+               <span style="color: #999;">|</span>
+               <span>${isScheduled ? '每日推送' : '手动推送'}</span>
+             </div>
            </div>`;
   
   // 天气预警（如果有）
   if (alertData.success && alertData.data.hasAlerts) {
     const alertLevelColors = {
-      '红色': '#ff4d4f',
-      '橙色': '#ff7a45',
-      '黄色': '#ffa940',
+      '红色': '#f5222d',
+      '橙色': '#fa541c',
+      '黄色': '#faad14',
       '蓝色': '#1890ff',
       '绿色': '#52c41a',
       '黑色': '#262626'
     };
     
     alertData.data.alerts.forEach(alert => {
-      const color = alertLevelColors[alert.level] || '#ff4d4f';
-      html += `<div style="background-color: ${color}15; border-left: 4px solid ${color}; border-radius: 6px; padding: 12px; margin-bottom: 15px;">
-                 <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                   <span style="font-size: 20px; margin-right: 8px;">⚠️</span>
-                   <h3 style="margin: 0; color: ${color}; font-size: 16px;">${alert.level}${alert.type}预警</h3>
+      const color = alertLevelColors[alert.level] || '#f5222d';
+      html += `<div style="background: linear-gradient(to right, ${color}15, ${color}08); border-left: 3px solid ${color}; border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+                 <div style="display: flex; align-items: center; margin-bottom: 6px;">
+                   <div style="width: 6px; height: 6px; background: ${color}; border-radius: 50%; margin-right: 8px;"></div>
+                   <div style="font-size: 14px; font-weight: 600; color: ${color};">${alert.level}${alert.type}预警</div>
                  </div>
-                 <p style="margin: 0; color: #666; font-size: 14px; line-height: 1.4;">${alert.description}</p>
-                 <div style="color: #999; font-size: 12px; margin-top: 8px;">
-                   <div><strong>生效时间:</strong> ${alert.effectiveTime}</div>
-                   <div><strong>结束时间:</strong> ${alert.expireTime}</div>
-                   <div><strong>严重程度:</strong> ${alert.severity}</div>
+                 <div style="font-size: 13px; color: #666; margin-bottom: 8px; line-height: 1.4;">${alert.description}</div>
+                 <div style="display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: #888;">
+                   <span>生效: ${alert.effectiveTime.split(' ')[1] || alert.effectiveTime}</span>
+                   <span>|</span>
+                   <span>结束: ${alert.expireTime.split(' ')[1] || alert.expireTime}</span>
                  </div>
-                 ${alert.instruction ? `<div style="margin-top: 8px; padding: 8px; background-color: #fff; border-radius: 4px; border: 1px solid #f0f0f0;">
-                                         <div style="color: #333; font-size: 13px;"><strong>防御指南:</strong> ${alert.instruction}</div>
-                                       </div>` : ''}
                </div>`;
     });
   }
   
-  // 分钟级降水预报（如果有降水）
+  // 分钟级降水预报
   if (precipitationData.success && precipitationData.data.hasPrecipitation) {
     const isSevere = precipitationData.isSevere;
-    const bgColor = isSevere ? '#fff2f0' : '#f0f7ff';
-    const borderColor = isSevere ? '#ffccc7' : '#91d5ff';
     const icon = precipitationData.data.precipitationType === '雪' ? '❄️' : '🌧️';
     
-    html += `<div style="background-color: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
-               <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                 <span style="font-size: 24px; margin-right: 10px;">${icon}</span>
-                 <h3 style="margin: 0; color: ${isSevere ? '#cf1322' : '#096dd9'}; font-size: 18px;">
-                   未来2小时降水预报
-                 </h3>
+    html += `<div style="background: ${isSevere ? '#fff2f0' : '#f0f9ff'}; border-radius: 8px; padding: 14px; margin-bottom: 16px; border: 1px solid ${isSevere ? '#ffccc7' : '#d1e9ff'};">
+               <div style="display: flex; align-items: center; margin-bottom: 8px;">
+                 <div style="font-size: 20px; margin-right: 10px;">${icon}</div>
+                 <div style="flex: 1;">
+                   <div style="font-size: 14px; font-weight: 600; color: ${isSevere ? '#d4380d' : '#096dd9'};">降水预报</div>
+                   <div style="font-size: 12px; color: #666;">${precipitationData.data.intensity}</div>
+                 </div>
                </div>
-               <div style="color: #666; font-size: 14px; margin-bottom: 5px;">
-                 <strong>降水类型:</strong> ${precipitationData.data.precipitationType}
+               <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; font-size: 12px;">
+                 <div><span style="color: #888;">开始:</span> ${precipitationData.data.startTime}</div>
+                 <div><span style="color: #888;">结束:</span> ${precipitationData.data.endTime}</div>
+                 <div><span style="color: #888;">最大:</span> ${precipitationData.data.maxPrecip}mm</div>
+                 <div><span style="color: #888;">类型:</span> ${precipitationData.data.precipitationType}</div>
                </div>
-               <div style="color: #666; font-size: 14px; margin-bottom: 5px;">
-                 <strong>降水强度:</strong> ${precipitationData.data.intensity} (最大: ${precipitationData.data.maxPrecip}mm)
-               </div>
-               <div style="color: #666; font-size: 14px; margin-bottom: 5px;">
-                 <strong>开始时间:</strong> ${precipitationData.data.startTime}
-               </div>
-               <div style="color: #666; font-size: 14px; margin-bottom: 5px;">
-                 <strong>结束时间:</strong> ${precipitationData.data.endTime}
-               </div>
-               <div style="color: #666; font-size: 14px;">
-                 <strong>预报摘要:</strong> ${precipitationData.data.summary}
-               </div>
-               <div style="color: #999; font-size: 12px; margin-top: 5px;">
-                 数据更新时间: ${new Date(precipitationData.data.updateTime).toLocaleString('zh-CN')}
-               </div>
-               ${isSevere ? '<div style="color: #cf1322; font-size: 13px; margin-top: 8px; font-weight: bold;">⚠️ 恶劣天气，请注意防范！</div>' : ''}
              </div>`;
   }
   
   // 实时天气
   if (weatherData.success) {
     const w = weatherData.data;
-    html += `<div style="background-color: #f0f7ff; border-radius: 8px; padding: 18px; margin-bottom: 20px; border: 1px solid #d1e3ff;">
-               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                 <h2 style="margin: 0; color: #0066cc; font-size: 18px;">🌤️ ${w.location} 天气</h2>
-                 <div style="font-size: 32px; font-weight: bold; color: #ff6b35;">${w.temperature}°C</div>
+    html += `<div style="background: linear-gradient(135deg, #f5f7fa 0%, #e4e8f0 100%); border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                 <div>
+                   <div style="font-size: 15px; font-weight: 600; color: #333;">${w.location}</div>
+                   <div style="font-size: 12px; color: #666;">${w.condition}</div>
+                 </div>
+                 <div style="font-size: 36px; font-weight: 300; color: #1890ff;">${w.temperature}°</div>
                </div>
-               <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 15px;">
-                 <div style="color: #333;"><strong>天气:</strong> ${w.condition}</div>
-                 <div style="color: #333;"><strong>空气质量:</strong> ${w.airQuality} (AQI: ${w.aqi})</div>
-                 <div style="color: #333;"><strong>湿度:</strong> ${w.humidity}%</div>
-                 <div style="color: #333;"><strong>风力:</strong> ${w.wind}</div>
-                 <div style="color: #333;"><strong>日出:</strong> ${w.sunrise}</div>
-                 <div style="color: #333;"><strong>日落:</strong> ${w.sunset}</div>
+               
+               <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: ${w.lifeIndices ? '12px' : '0'};">
+                 <div style="text-align: center;">
+                   <div style="font-size: 11px; color: #888; margin-bottom: 2px;">湿度</div>
+                   <div style="font-size: 13px; font-weight: 500;">${w.humidity}%</div>
+                 </div>
+                 <div style="text-align: center;">
+                   <div style="font-size: 11px; color: #888; margin-bottom: 2px;">风力</div>
+                   <div style="font-size: 13px; font-weight: 500;">${w.wind}</div>
+                 </div>
+                 <div style="text-align: center;">
+                   <div style="font-size: 11px; color: #888; margin-bottom: 2px;">空气质量</div>
+                   <div style="font-size: 13px; font-weight: 500;">${w.airQuality}</div>
+                 </div>
                </div>
+               
                ${w.lifeIndices || ''}
+               
+               <div style="display: flex; justify-content: space-between; margin-top: 12px; font-size: 11px; color: #666;">
+                 <div>🌅 ${w.sunrise}</div>
+                 <div>🌇 ${w.sunset}</div>
+               </div>
              </div>`;
   }
   
   // 天气预报
   if (forecastData.success) {
-    html += `<div style="background-color: #fff8f0; border-radius: 8px; padding: 18px; margin-bottom: 20px; border: 1px solid #ffe8cc;">
-               <h2 style="margin: 0 0 15px 0; color: #e67e22; font-size: 18px;">📅 未来3天天气预报</h2>
+    html += `<div style="margin-bottom: 16px;">
+               <div style="font-size: 14px; font-weight: 600; color: #333; margin-bottom: 10px;">📅 未来3天</div>
                ${forecastData.data}
-               <div style="text-align: center; margin-top: 12px; color: #999; font-size: 12px;">数据来源: 腾讯天气</div>
              </div>`;
   }
   
@@ -927,12 +950,12 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   }
   
   // 底部信息
-  html += `<div style="text-align: center; margin-top: 25px; padding-top: 20px; border-top: 1px solid #e9ecef;">
-             <div style="color: #6c757d; font-size: 12px; margin-bottom: 5px;">
-               每日消息推送系统 | ${isScheduled ? '定时任务' : '手动触发'}
+  html += `<div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #f0f0f0; text-align: center;">
+             <div style="font-size: 11px; color: #999; margin-bottom: 4px;">
+               每日推送 · ${isScheduled ? '定时任务' : '手动触发'}
              </div>
-             <div style="color: #adb5bd; font-size: 11px;">
-               数据来源: 一言 • 腾讯天气 • 和风天气 • KFC文案
+             <div style="font-size: 10px; color: #ccc;">
+               数据源: 一言 · 腾讯天气 · 和风天气 · KFC文案
              </div>
            </div>`;
   
