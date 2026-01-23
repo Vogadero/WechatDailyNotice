@@ -1,15 +1,15 @@
 {
-  "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IlRER1dNRFBQNEYifQ.eyJzdWIiOiIzTktQQ1VDRTNYIiwiaWF0IjoxNzY5MTU0MzUyLCJleHAiOjE3NjkxNTUyNTJ9.7UUeBmd8_mcrNCGaRSbbsarjq2QubwrlnajSHDZMlkuP49Gd2wk02BF0IpKJy83MM7qw8Y1PwZ4dRY6mjznJBA",
-  "generated_at": 1769154352,
-  "expires_at": 1769155252,
-  "created_at": "2026-01-23T07:46:22.979Z",
+  "token": "eyJhbGciOiJFZERTQSIsImtpZCI6IlRER1dNRFBQNEYifQ.eyJzdWIiOiIzTktQQ1VDRTNYIiwiaWF0IjoxNzY5MTU1NzIyLCJleHAiOjE3NjkxNTY2MjJ9.d4yMTC8VN5W-iedbsIK4i5R4xJ1dI4vZEACWvqlKVVIjMMe1fGQS_a2Q_fhvhu8aKd3D6ZfRv3VCTR8AoKtRBQ",
+  "generated_at": 1769155722,
+  "expires_at": 1769156622,
+  "created_at": "2026-01-23T08:09:12.591Z",
   "header": {
     "alg": "EdDSA",
     "kid": "TDGWMDPP4F"
   },
   "payload": {
     "sub": "3NKPCUCE3X",
-    "iat": 1769154352,
-    "exp": 1769155252
+    "iat": 1769155722,
+    "exp": 1769156622
   }
 }
