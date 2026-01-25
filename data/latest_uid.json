@@ -1,6 +1,6 @@
 {
   "uid": "UID_E2oiyUeQLywl133I2SIv5SuKfHrC",
-  "updated": "2026-01-24T00:58:01.212Z",
-  "trigger": "scheduled",
-  "source": "api"
+  "updated": "2026-01-25T09:31:21.167Z",
+  "trigger": "manual",
+  "source": "local_storage"
 }
