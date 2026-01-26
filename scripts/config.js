@@ -36,12 +36,12 @@ const CONFIG = {
         WEATHER: true,      // 天气（含预警、降水、轮播）
         LUCK: true,         // 运势跑马灯
         HISTORY: false,      // 历史上的今天
-        GOLD: true,         // 黄金价格
-        EXCHANGE: true,     // 汇率
-        AI_NEWS: true,      // AI 资讯
+        GOLD: false,         // 黄金价格
+        EXCHANGE: false,     // 汇率
+        AI_NEWS: false,      // AI 资讯
         NEWS_60S: false,     // 60秒读懂世界
         BING_WALLPAPER: true,// Bing每日壁纸
-        yiYan: true,        // 一言
+        yiYan: false,        // 一言
         KFC: true           // 疯狂星期四（仍需满足周四条件）
     }
 };

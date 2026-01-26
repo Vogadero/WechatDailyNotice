@@ -186,6 +186,32 @@ function getStoredUid() {
   };
 }
 
+// 历史数据文件路径
+const HISTORY_FILE = path.join(__dirname, '../data/history_data.json');
+
+// 获取历史数据
+function getHistoryData() {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+    }
+  } catch (e) {
+    console.error('读取历史数据失败:', e.message);
+  }
+  return {};
+}
+
+// 保存历史数据
+function saveHistoryData(data) {
+  try {
+    const dir = path.dirname(HISTORY_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('保存历史数据失败:', e.message);
+  }
+}
+
 // 获取最新的UID（优化：只有定时任务时才调用API）
 async function getLatestUid() {
   try {
@@ -352,7 +378,7 @@ async function getWeatherForecast() {
       params: {
         query: CONFIG.LOCATION,
         encoding: 'json',
-        days: 3
+        days: 7  // Changed from 3 to 7
       },
       timeout: 10000
     });
@@ -360,9 +386,21 @@ async function getWeatherForecast() {
     if (response.data.code === 200) {
       const data = response.data.data;
 
-      // 构建3天预报数据
-      const forecastDays = data.daily_forecast.slice(0, 3).map((day, index) => {
-        const dayNames = ['今天', '明天', '后天'];
+      // 构建7天预报数据
+      const forecastDays = data.daily_forecast.map((day, index) => {
+        // Calculate day name dynamically
+        let dayName = '未知';
+        if (index === 0) dayName = '今天';
+        else if (index === 1) dayName = '明天';
+        else if (index === 2) dayName = '后天';
+        else {
+            // Calculate weekday for further days
+            const date = new Date();
+            date.setDate(date.getDate() + index);
+            const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+            dayName = weekdays[date.getDay()];
+        }
+
         const weatherIcons = {
           '晴': '☀️',
           '多云': '⛅',
@@ -390,13 +428,15 @@ async function getWeatherForecast() {
           day.day_condition.includes('大雪');
 
         return {
-          dayName: dayNames[index],
+          dayName: dayName,
           dayIcon: dayIcon,
           nightIcon: nightIcon,
           maxTemp: day.max_temperature,
           minTemp: day.min_temperature,
           dayCondition: day.day_condition,
           nightCondition: day.night_condition,
+          windDirection: day.wind_direction || day.day_wind_direction || '',
+          windPower: day.wind_power || day.day_wind_power || '',
           isBadWeather: isBadWeather
         };
       });
@@ -841,18 +881,50 @@ async function getExchangeRate() {
         'GBP': '英镑'
       };
 
+      const historyData = getHistoryData();
+      const historyRates = historyData.exchange || {};
+      const newHistoryRates = {};
+
       for (const cur of targetCurrencies) {
         const item = allRates.find(r => r.currency === cur);
         if (item) {
           // API返回的是 1 CNY = X 外币，我们需要算 1 外币 = Y CNY
-          const rate = (1 / item.rate).toFixed(4);
+          const rate = parseFloat((1 / item.rate).toFixed(4));
+          
+          // 计算涨跌
+          const lastRate = historyRates[cur] || 0;
+          let diffStr = '';
+          let diffColor = '#94a3b8'; // grey
+          
+          if (lastRate > 0) {
+             const diff = rate - lastRate;
+             const percent = (diff / lastRate * 100).toFixed(2);
+             if (diff > 0.0001) {
+                diffStr = `↑ ${percent}%`;
+                diffColor = '#ef4444'; // red for up
+             } else if (diff < -0.0001) {
+                diffStr = `↓ ${Math.abs(percent)}%`;
+                diffColor = '#22c55e'; // green for down
+             } else {
+                diffStr = '-';
+             }
+          }
+
           displayRates.push({
             code: cur,
             name: names[cur],
-            rate: rate
+            rate: rate.toFixed(4),
+            diffStr: diffStr,
+            diffColor: diffColor
           });
+          
+          newHistoryRates[cur] = rate;
         }
       }
+      
+      // Save updated history
+      historyData.exchange = newHistoryRates;
+      saveHistoryData(historyData);
 
       console.log(`获取到汇率数据: ${displayRates.length} 条`);
       return {
@@ -941,9 +1013,48 @@ async function getGoldPrice() {
 
     if (response.data.code === 200) {
       console.log(`获取到黄金价格数据: ${response.data.data.date}`);
+      
+      const data = response.data.data;
+      const historyData = getHistoryData();
+      const historyGold = historyData.gold || {};
+      const newHistoryGold = {};
+      
+      // Compare Metals
+      if (data.metals && Array.isArray(data.metals)) {
+          data.metals = data.metals.map(item => {
+              const lastPrice = historyGold[item.name] || 0;
+              const currentPrice = parseFloat(item.today_price);
+              let diffStr = '';
+              let diffColor = '#94a3b8';
+              
+              if (lastPrice > 0) {
+                  const diff = currentPrice - lastPrice;
+                  if (diff > 0.01) {
+                      diffStr = `↑ ${diff.toFixed(2)}`;
+                      diffColor = '#ef4444';
+                  } else if (diff < -0.01) {
+                      diffStr = `↓ ${Math.abs(diff).toFixed(2)}`;
+                      diffColor = '#22c55e';
+                  } else {
+                      diffStr = '-';
+                  }
+              }
+              newHistoryGold[item.name] = currentPrice;
+              
+              return {
+                  ...item,
+                  diffStr,
+                  diffColor
+              };
+          });
+      }
+      
+      historyData.gold = newHistoryGold;
+      saveHistoryData(historyData);
+
       return {
         success: true,
-        data: response.data.data
+        data: data
       };
     } else {
       throw new Error(`黄金价格API返回错误: ${response.data.message}`);
@@ -1033,6 +1144,9 @@ async function sendMessage(htmlContent, summary, uid) {
 function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   const w = weatherData.data;
   const forecastDays = forecastData.data;
+  
+  // Generate unique ID to avoid conflicts in list views
+  const uniqueId = 'carousel-' + Math.floor(Math.random() * 1000000);
 
   // 天气图标映射
   const weatherIconMap = {
@@ -1064,8 +1178,6 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   const sunAngle = 180 - (sunPercent / 100 * 180);
   const sunRad = sunAngle * Math.PI / 180;
   // 半径 80, 中心 (100, 100)
-  // x = 100 + 80 * cos(rad)
-  // y = 100 - 80 * sin(rad)
   const sunX = 100 + 80 * Math.cos(sunRad);
   const sunY = 100 - 80 * Math.sin(sunRad);
 
@@ -1076,12 +1188,14 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
     background: rgba(16, 24, 40, 0.6); 
     border-radius: 16px; 
     border: 1px solid rgba(0, 243, 255, 0.15); 
-    padding: 16px; 
+    padding: 12px; 
     box-sizing: border-box;
     backdrop-filter: blur(12px);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
     position: relative;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   `;
 
   const neonGlow = `
@@ -1095,11 +1209,138 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
     z-index: 0;
   `;
 
+  // slide3: Life Indices
+  let lifeIndicesHtml = '';
+  // Support both snake_case (API spec) and camelCase (potential processor)
+  const indicesSource = w.life_indices || w.lifeIndices || [];
+  const indicesToShow = indicesSource.length > 0 ? indicesSource.slice(0, 6) : [];
+
+  // Icon Map for Indices - Ensure unique icons
+  const indexIconMap = {
+    '穿衣': '👕', '紫外线': '☂️', '洗车': '🚗', '运动': '🏃', '感冒': '💊',
+    '空气扩散': '💨', '舒适度': '😌', '晾晒': '👚', '钓鱼': '🎣', '旅游': '🧳',
+    '过敏': '🤧', '防晒': '🧴', '化妆': '💄', '交通': '🚦', '路况': '🚦',
+    '空气污染': '�', '中暑': '🥵', '晨练': '🧘', '约会': '🌹', '雨伞': '☔'
+  };
+  // Ensure correct icon for air pollution (fix potential encoding issues)
+  indexIconMap['空气污染'] = '🌫️';
+  const fallbackIcons = ['🌟', '🍀', '🌸', '❄️', '🔥', '🌈', '🎈', '🎁'];
+
+  // Pure CSS Marquee & Highlight Setup
+  let gridItems = '';
+  let adviceItems = '';
+  let cssStyles = '';
+
+  if (indicesToShow.length > 0) {
+    const count = indicesToShow.length;
+    const itemDuration = 6; // 6 seconds per item to allow horizontal scroll
+    const totalDuration = count * itemDuration;
+    const stepPercent = 100 / count;
+    
+    // 1. Define Keyframes
+    cssStyles += `<style>
+      /* Text Vertical Scroll Animation */
+      @keyframes scroll-text-${uniqueId} {
+        0% { transform: translateY(0); }
+        100% { transform: translateY(-${count * 36}px); }
+      }
+      
+      /* Horizontal Marquee for long text */
+      @keyframes horizontal-marquee-${uniqueId} {
+        0%, 15% { transform: translateX(0); }
+        85%, 100% { transform: translateX(-60%); } /* Roughly scrolls enough */
+      }
+      
+      /* Grid Highlight Animation */
+      @keyframes highlight-grid-${uniqueId} {
+        0%, ${stepPercent - 0.1}% { 
+          background: rgba(255,255,255,0.1); 
+          border-color: rgba(255,255,255,0.3); 
+        }
+        ${stepPercent}%, 100% { 
+          background: rgba(255,255,255,0.03); 
+          border-color: rgba(255,255,255,0.05); 
+        }
+      }
+      
+      /* Apply animations */
+      #advice-wrapper-${uniqueId} {
+        animation: scroll-text-${uniqueId} ${totalDuration}s steps(${count}) infinite;
+      }
+      
+      .h-scroll-${uniqueId} {
+        display: inline-block;
+        white-space: nowrap;
+        animation: horizontal-marquee-${uniqueId} ${itemDuration}s ease-in-out infinite;
+      }
+    `;
+
+    indicesToShow.forEach((item, i) => {
+        // 2. Grid Item (Div)
+        let icon = indexIconMap[item.name];
+        if (!icon) icon = fallbackIcons[i % fallbackIcons.length];
+        
+        const delay = i * itemDuration;
+
+        cssStyles += `
+          #grid-item-${uniqueId}-${i} {
+            animation: highlight-grid-${uniqueId} ${totalDuration}s infinite;
+            animation-delay: ${delay}s;
+          }
+        `;
+
+        gridItems += `
+          <div id="grid-item-${uniqueId}-${i}" style="
+            background: rgba(255,255,255,0.03); 
+            border-color: rgba(255,255,255,0.05);
+            padding: 6px 8px; 
+            border-radius: 8px; 
+            border: 1px solid rgba(255,255,255,0.05);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.3s ease;
+          ">
+            <div style="font-size: 16px;">${icon}</div>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: 11px; color: #a78bfa; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.name}</div>
+              <div style="font-size: 10px; color: #fff;">${item.level || item.status || ''}</div>
+            </div>
+          </div>
+        `;
+        
+        // 3. Advice Item
+        let adviceText = item.description || item.detail || item.category || item.text || item.desc || "暂无详细建议";
+        adviceItems += `
+            <div style="
+                height: 36px; 
+                display: flex; 
+                align-items: center; 
+                font-size: 12px; 
+                color: #e2e8f0; 
+                width: 100%;
+                overflow: hidden;
+            ">
+                <span style="color: #f472b6; margin-right: 8px; font-weight: bold; flex-shrink: 0; background: rgba(0,0,0,0.4); z-index: 2; padding-right: 6px;">${item.name}</span>
+                <div style="flex: 1; overflow: hidden; white-space: nowrap;">
+                    <span class="h-scroll-${uniqueId}">${adviceText}</span>
+                </div>
+            </div>
+        `;
+    });
+    
+    cssStyles += '</style>';
+  } else {
+    gridItems = '<div style="color: #64748b; font-size: 12px; text-align: center; padding: 12px; grid-column: span 2;">暂无生活指数数据</div>';
+    adviceItems = '<div style="color: #64748b; font-size: 11px; height: 36px; display: flex; align-items: center;">暂无建议</div>';
+  }
+
   // slide1: 实时天气 + 日出日落可视化
   const slide1 = `
-    <div style="${cardStyle}">
+    <div class="slide-item-${uniqueId}" data-index="0" style="${cardStyle}">
+      ${cssStyles}
       <div style="${neonGlow}"></div>
-      <div style="position: relative; z-index: 1;">
+      <div style="position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column;">
         <!-- Header -->
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
           <div style="font-size: 16px; font-weight: bold; color: #fff;">${w.location}</div>
@@ -1107,8 +1348,8 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
         </div>
         
         <!-- Sun Arc Viz -->
-        <div style="position: relative; height: 110px; margin-bottom: 0px;">
-           <svg width="100%" height="100%" viewBox="0 0 200 110" style="overflow: visible;">
+        <div style="position: relative; height: 90px; margin-bottom: 0px;">
+           <svg width="100%" height="100%" viewBox="0 0 200 95" style="overflow: visible;">
               <!-- Track -->
               <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="2" stroke-dasharray="4 4" />
               <!-- Progress -->
@@ -1122,47 +1363,70 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
               <text x="180" y="115" fill="#94a3b8" font-size="10" text-anchor="middle">${w.sunset}</text>
            </svg>
            <!-- Center Temp -->
-           <div style="position: absolute; top: 40px; left: 0; width: 100%; text-align: center;">
+           <div style="position: absolute; top: 30px; left: 0; width: 100%; text-align: center;">
               <div style="display: flex; justify-content: center; align-items: center; gap: 8px;">
-                 <span style="font-size: 32px;">${currentIcon}</span>
-                 <span style="font-size: 42px; font-weight: 300; color: #fff;">${w.temperature}°</span>
+                 <span style="font-size: 28px;">${currentIcon}</span>
+                 <span style="font-size: 36px; font-weight: 300; color: #fff;">${w.temperature}°</span>
               </div>
-              <div style="font-size: 14px; color: #94a3b8; margin-top: -5px;">${w.condition}</div>
            </div>
         </div>
 
         <!-- Details Grid -->
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 15px;">
-           <div style="background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; text-align: center;">
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 25px;">
+           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
              <div style="font-size: 12px; margin-bottom: 2px;">💧</div>
              <div style="font-size: 10px; color: #64748b;">湿度</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.humidity}%</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; text-align: center;">
+           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
              <div style="font-size: 12px; margin-bottom: 2px;">🌬️</div>
-             <div style="font-size: 10px; color: #64748b;">风力</div>
+             <div style="font-size: 10px; color: #64748b;">${w.wind_direction}</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.wind_power}</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; text-align: center;">
+           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
              <div style="font-size: 12px; margin-bottom: 2px;">⏲️</div>
              <div style="font-size: 10px; color: #64748b;">气压</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.pressure}</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${w.pressure}hPa</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; text-align: center;">
+           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
              <div style="font-size: 12px; margin-bottom: 2px;">☔</div>
              <div style="font-size: 10px; color: #64748b;">降水</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.precipitation}</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${w.precipitation}mm</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; text-align: center;">
+           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
              <div style="font-size: 12px; margin-bottom: 2px;">😷</div>
              <div style="font-size: 10px; color: #64748b;">PM2.5</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.pm25}</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 8px; border-radius: 8px; text-align: center;">
+           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
              <div style="font-size: 12px; margin-bottom: 2px;">🍃</div>
-             <div style="font-size: 10px; color: #64748b;">空气</div>
-             <div style="font-size: 12px; property: color: ${w.airQuality === '优' ? '#4ade80' : '#facc15'};">${w.airQuality}</div>
+             <div style="font-size: 10px; color: #64748b;">空气 ${w.aqi || ''}</div>
+             <div style="font-size: 12px; color: ${w.airQuality === '优' ? '#4ade80' : '#facc15'};">${w.airQuality}</div>
            </div>
+        </div>
+        <div style="margin-top: 15px; border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 8px; flex: 1; display: flex; flex-direction: column;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-shrink: 0;">
+            <div style="font-size: 12px; color: #f472b6; letter-spacing: 1px;">生活指南</div>
+          </div>
+          <div class="slide3-content-${uniqueId}" style="position: relative; z-index: 1; display: flex; flex-direction: column; flex: 1;">
+            <div class="life-grid-${uniqueId}" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-bottom: 6px; flex-shrink: 0;">
+              ${gridItems}
+            </div>
+            <div class="advice-box-${uniqueId}" style="
+                background: rgba(0,0,0,0.2); 
+                padding: 0 12px; 
+                border-radius: 6px; 
+                border-left: 2px solid #f472b6;
+                height: 36px;
+                overflow: hidden;
+                position: relative;
+                flex-shrink: 0;
+            ">
+                <div id="advice-wrapper-${uniqueId}" style="display: flex; flex-direction: column;">
+                    ${adviceItems}
+                </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1180,12 +1444,17 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
         margin-bottom: 8px;
         border-left: 3px solid ${index === 0 ? '#00f3ff' : 'rgba(255,255,255,0.1)'};
       ">
-        <div style="display: flex; flex-direction: column;">
+        <div style="display: flex; flex-direction: column; width: 60px;">
           <span style="font-size: 14px; color: #e2e8f0;">${day.dayName}</span>
           <span style="font-size: 10px; color: #64748b;">${day.dayCondition}</span>
         </div>
         <div style="font-size: 20px;">${day.dayIcon}</div>
-        <div style="text-align: right;">
+        <!-- Wind Info -->
+        <div style="display: flex; flex-direction: column; align-items: center; width: 60px;">
+            <span style="font-size: 10px; color: #94a3b8;">${day.windDirection}</span>
+            <span style="font-size: 10px; color: #64748b;">${day.windPower}</span>
+        </div>
+        <div style="text-align: right; width: 40px;">
           <div style="font-size: 16px; color: #fff; font-weight: 500;">${day.maxTemp}°</div>
           <div style="font-size: 10px; color: #64748b;">${day.minTemp}°</div>
         </div>
@@ -1194,70 +1463,15 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   });
 
   const slide2 = `
-    <div style="${cardStyle}">
+    <div class="slide-item-${uniqueId}" data-index="1" style="${cardStyle}">
       <div style="${neonGlow}"></div>
-        <div style="position: relative; z-index: 1;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <div style="font-size: 14px; color: #a78bfa; letter-spacing: 2px;">⚡ 天气预报</div>
-          <div style="font-size: 10px; color: rgba(255,255,255,0.4);">未来3天</div>
+        <div style="position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column;">
+        <!-- Cleaned up Header -->
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-shrink: 0;">
+          <div style="font-size: 16px; font-weight: bold; color: #fff;">未来天气</div>
         </div>
-        <div>${forecastHtml}</div>
-      </div>
-    </div>
-  `;
-
-  // slide3: Life Indices
-  let lifeIndicesHtml = '';
-  const indicesToShow = w.lifeIndices && w.lifeIndices.length > 0 ? w.lifeIndices.slice(0, 6) : [];
-
-  // Icon Map for Indices
-  const indexIconMap = {
-    '穿衣': '👕',
-    '紫外线': '☂️',
-    '洗车': '🚗',
-    '运动': '🏃',
-    '感冒': '💊',
-    '空气扩散': '💨',
-    '舒适度': '😌',
-    '晾晒': '👚',
-    '钓鱼': '🎣',
-    '旅游': '🧳'
-  };
-
-  if (indicesToShow.length > 0) {
-    lifeIndicesHtml = indicesToShow.map(item => {
-      const icon = indexIconMap[item.name] || '💡';
-      return `
-      <div style="
-        background: rgba(255,255,255,0.03); 
-        padding: 10px; 
-        border-radius: 12px; 
-        border: 1px solid rgba(255,255,255,0.05);
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      ">
-        <div style="font-size: 20px;">${icon}</div>
-        <div style="flex: 1;">
-          <div style="font-size: 12px; color: #a78bfa; margin-bottom: 2px;">${item.name}</div>
-          <div style="font-size: 10px; color: #fff;">${item.level}</div>
-        </div>
-      </div>
-    `;
-    }).join('');
-  } else {
-    lifeIndicesHtml = '<div style="color: #64748b; font-size: 12px; text-align: center; padding: 20px;">暂无生活指数数据</div>';
-  }
-
-  const slide3 = `
-    <div style="${cardStyle}">
-      <div style="${neonGlow}"></div>
-        <div style="position: relative; z-index: 1;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-          <div style="font-size: 14px; color: #f472b6; letter-spacing: 2px;">💡 生活建议</div>
-        </div>
-        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;">
-          ${lifeIndicesHtml}
+        <div style="overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; flex: 1;">
+            ${forecastHtml}
         </div>
       </div>
     </div>
@@ -1266,7 +1480,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   // 轮播容器
   const html = `
     <div style="margin: 20px 0; position: relative;">
-      <div id="weather-carousel" style="
+      <div id="${uniqueId}" style="
         overflow-x: auto; 
         display: flex; 
         scroll-snap-type: x mandatory; 
@@ -1277,45 +1491,39 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
       ">
         ${slide1}
         ${slide2}
-        ${slide3}
-      </div>
-      <!-- Dots Indicator (Optional, added specifically for better UX) -->
-      <div style="display: flex; justify-content: center; gap: 6px; margin-top: -10px;">
-        <div class="dot active" style="width: 6px; height: 6px; background: #00f3ff; border-radius: 50%;"></div>
-        <div class="dot" style="width: 6px; height: 6px; background: rgba(255,255,255,0.2); border-radius: 50%;"></div>
-        <div class="dot" style="width: 6px; height: 6px; background: rgba(255,255,255,0.2); border-radius: 50%;"></div>
       </div>
 
       <script>
         (function() {
-          var container = document.getElementById('weather-carousel');
+          var container = document.getElementById('${uniqueId}');
           if (!container) return;
           var currentIndex = 0;
           var autoPlayInterval;
           var isUserInteracting = false;
-          var dots = document.querySelectorAll('.dot');
-          
-          function updateDots(index) {
-             dots.forEach((dot, i) => {
-               dot.style.background = i === index ? '#00f3ff' : 'rgba(255,255,255,0.2)';
-             });
+
+          function getSlideWidth() {
+             return container.clientWidth || container.offsetWidth || 0;
           }
 
           function goToSlide(index) {
-            if (index < 0 || index >= 3) return;
+            if (index < 0 || index >= 2) return;
             currentIndex = index;
-            container.scrollTo({
-              left: container.offsetWidth * index,
-              behavior: 'smooth'
-            });
-            updateDots(index);
+            var width = getSlideWidth();
+            if (width > 0) {
+                // Gap is 12px
+                var scrollPos = index * (width + 12);
+                container.scrollTo({
+                  left: scrollPos,
+                  behavior: 'smooth'
+                });
+            }
           }
           
           function startAutoPlay() {
             stopAutoPlay();
             autoPlayInterval = setInterval(function() {
               if (!isUserInteracting) {
-                var nextIndex = (currentIndex + 1) % 3;
+                var nextIndex = (currentIndex + 1) % 2;
                 goToSlide(nextIndex);
               }
             }, 5000);
@@ -1325,19 +1533,35 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
              if (autoPlayInterval) clearInterval(autoPlayInterval);
           }
           
-          var scrollTimeout;
-          container.addEventListener('scroll', function() {
-            isUserInteracting = true;
-            clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(function() {
-              isUserInteracting = false;
-              var newIndex = Math.round(container.scrollLeft / container.offsetWidth);
-              if (newIndex >= 0 && newIndex < 3) {
-                 currentIndex = newIndex;
-                 updateDots(currentIndex);
+          // Intersection Observer for updating dots
+          var observerOptions = {
+            root: container,
+            threshold: 0.5
+          };
+
+          var observer = new IntersectionObserver(function(entries) {
+            entries.forEach(function(entry) {
+              if (entry.isIntersecting) {
+                 var idx = parseInt(entry.target.getAttribute('data-index'));
+                 if (!isNaN(idx)) {
+                   currentIndex = idx;
+                 }
               }
-              startAutoPlay();
-            }, 300);
+            });
+          }, observerOptions);
+
+          var slides = document.querySelectorAll('.slide-item-' + uniqueId);
+          slides.forEach(function(slide) {
+            observer.observe(slide);
+          });
+          
+          container.addEventListener('scroll', function() {
+             isUserInteracting = true;
+             clearTimeout(scrollTimeout);
+             scrollTimeout = setTimeout(function() {
+               isUserInteracting = false;
+               startAutoPlay();
+             }, 2000);
           });
           
           startAutoPlay();
@@ -1730,8 +1954,11 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
               <div style="color: #64748b; font-size: 10px;">1 ${item.code} =</div>
             </div>
           </div>
-          <div style="color: #00f3ff; font-size: 18px; font-weight: bold; font-family: monospace;">
-            ${item.rate} <span style="font-size: 10px; color: #64748b;">CNY</span>
+          <div style="text-align: right;">
+            <div style="color: #00f3ff; font-size: 18px; font-weight: bold; font-family: monospace;">
+              ${item.rate} <span style="font-size: 10px; color: #64748b;">CNY</span>
+            </div>
+            <div style="font-size: 10px; color: ${item.diffColor || '#94a3b8'};">较昨 ${item.diffStr || '-'}</div>
           </div>
         </div>
     `).join('');
@@ -1835,9 +2062,12 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     const g = goldData.data;
     // 基础金价
     let metalItemsHtml = g.metals.map(item => `
-      <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px;">
         <span style="color: #cbd5e1;">${item.name}</span>
-        <span style="color: #f59e0b; font-weight: bold;">${item.today_price} ${item.unit}</span>
+        <div style="text-align: right;">
+          <div style="color: #f59e0b; font-weight: bold;">${item.today_price} ${item.unit}</div>
+          <div style="font-size: 10px; color: ${item.diffColor || '#94a3b8'};">较昨 ${item.diffStr || '-'}</div>
+        </div>
       </div>
     `).join('');
 
@@ -1891,19 +2121,22 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
   // 菜单项配置
   const menuItems = [];
-  if (CONFIG.SHOW_MODULES.AI_NEWS) menuItems.push({ id: 'ai-drawer-toggle', icon: '🤖', color: '#3b82f6' });
-  if (CONFIG.SHOW_MODULES.GOLD) menuItems.push({ id: 'gold-drawer-toggle', icon: '🏆', color: '#f59e0b' });
-  if (CONFIG.SHOW_MODULES.EXCHANGE) menuItems.push({ id: 'rate-drawer-toggle', icon: '💰', color: '#10b981' });
-  if (CONFIG.SHOW_MODULES.HISTORY) menuItems.push({ id: 'history-drawer-toggle', icon: '📜', color: '#8b5cf6' });
+  if (CONFIG.SHOW_MODULES.AI_NEWS && aiNewsData && aiNewsData.success) menuItems.push({ id: 'ai-drawer-toggle', icon: '🤖', color: '#3b82f6' });
+  if (CONFIG.SHOW_MODULES.GOLD && goldData && goldData.success) menuItems.push({ id: 'gold-drawer-toggle', icon: '🏆', color: '#f59e0b' });
+  if (CONFIG.SHOW_MODULES.EXCHANGE && rateData && rateData.success) menuItems.push({ id: 'rate-drawer-toggle', icon: '💰', color: '#10b981' });
+  if (CONFIG.SHOW_MODULES.HISTORY && historyData && historyData.success) menuItems.push({ id: 'history-drawer-toggle', icon: '📜', color: '#8b5cf6' });
 
   // 扇形轮盘菜单 (True Pie Chart with Pure CSS Animation)
   if (menuItems.length > 0) {
     const radius = 80; // 轮盘半径
-    const count = menuItems.length;
+    const fixedCount = 6; // 固定扇形数量，避免数量过少导致畸形
+    const count = fixedCount;
     const sectorAngle = 360 / count; // 每个扇形的角度
 
     // SVG 扇形路径生成
-    const svgSectors = menuItems.map((item, index) => {
+    const svgSectors = Array.from({ length: fixedCount }).map((_, index) => {
+      const hasItem = index < menuItems.length;
+      const item = hasItem ? menuItems[index] : { id: '', icon: '', color: 'rgba(255,255,255,0.08)' };
       const startAngle = index * sectorAngle;
       const endAngle = (index + 1) * sectorAngle;
 
@@ -1929,11 +2162,9 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
       // 交互逻辑：使用 onclick 切换 checkbox
       return `
-         <g class="wheel-sector-group" onclick="document.getElementById('${item.id}').checked = !document.getElementById('${item.id}').checked" style="cursor: pointer;">
+         <g class="wheel-sector-group" ${hasItem ? `onclick="document.getElementById('${item.id}').checked = !document.getElementById('${item.id}').checked"` : ''} style="cursor: ${hasItem ? 'pointer' : 'default'};">
             <path d="${pathData}" fill="${item.color}" stroke="rgba(255,255,255,0.2)" stroke-width="1" />
-            <text x="${iconX}" y="${iconY}" text-anchor="middle" dominant-baseline="central" fill="white" font-size="20" style="pointer-events: none;">
-               ${item.icon}
-            </text>
+            ${hasItem ? `<text x="${iconX}" y="${iconY}" text-anchor="middle" dominant-baseline="central" fill="white" font-size="20" style="pointer-events: none;">${item.icon}</text>` : ''}
          </g>
        `;
     }).join('');
