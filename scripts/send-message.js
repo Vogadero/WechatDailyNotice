@@ -1068,6 +1068,132 @@ async function getGoldPrice() {
   }
 }
 
+async function getFuelPrice() {
+  try {
+    console.log('正在获取汽油价格...');
+    const response = await axios.get(CONFIG.FUEL_API, {
+      params: {
+        region: CONFIG.LOCATION,
+        encoding: 'json'
+      },
+      timeout: 10000
+    });
+
+    if (response.data.code === 200) {
+      const data = response.data.data;
+      const historyData = getHistoryData();
+      const historyFuel = historyData.fuel || {};
+      const newHistoryFuel = {};
+
+      if (data.items && Array.isArray(data.items)) {
+        data.items = data.items.map(item => {
+          const currentPrice = parseFloat(item.price);
+          const lastPrice = historyFuel[item.name] || 0;
+          let diffStr = '';
+          let diffColor = '#94a3b8';
+
+          if (lastPrice > 0) {
+            const diff = currentPrice - lastPrice;
+            if (diff > 0.01) {
+              diffStr = `↑ ${diff.toFixed(2)}`;
+              diffColor = '#ef4444';
+            } else if (diff < -0.01) {
+              diffStr = `↓ ${Math.abs(diff).toFixed(2)}`;
+              diffColor = '#22c55e';
+            } else {
+              diffStr = '-';
+            }
+          }
+
+          newHistoryFuel[item.name] = currentPrice;
+
+          return {
+            ...item,
+            diffStr,
+            diffColor
+          };
+        });
+      }
+
+      historyData.fuel = newHistoryFuel;
+      saveHistoryData(historyData);
+
+      return {
+        success: true,
+        data: data
+      };
+    } else {
+      throw new Error(`汽油价格API返回错误: ${response.data.message}`);
+    }
+  } catch (error) {
+    console.error('获取汽油价格失败:', error.message);
+    return {
+      success: false,
+      error: `获取汽油价格失败: ${error.message}`
+    };
+  }
+}
+
+async function getMoyuDaily() {
+  try {
+    console.log('正在获取摸鱼日报...');
+    const response = await axios.get(CONFIG.MOYU_API, {
+      params: { encoding: 'json' },
+      timeout: 10000
+    });
+
+    if (response.data.code === 200) {
+      return {
+        success: true,
+        data: response.data.data
+      };
+    } else {
+      throw new Error(`摸鱼日报API返回错误: ${response.data.message}`);
+    }
+  } catch (error) {
+    console.error('获取摸鱼日报失败:', error.message);
+    return {
+      success: false,
+      error: `获取摸鱼日报失败: ${error.message}`
+    };
+  }
+}
+
+// 通用API获取函数
+async function fetchApi(url, name) {
+  try {
+    console.log(`正在获取${name}...`);
+    const response = await axios.get(url, {
+      params: { encoding: 'json' },
+      timeout: 10000
+    });
+    if (response.data.code === 200) {
+      return { success: true, data: response.data.data };
+    } else {
+      // 部分接口可能直接返回数组或对象，视具体情况而定，但这里假设遵循标准结构
+      return { success: true, data: response.data.data };
+    }
+  } catch (error) {
+    console.error(`获取${name}失败:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function getRedNoteHot() { return fetchApi(CONFIG.REDNOTE_API, '小红书热点'); }
+async function getWeiboHot() { return fetchApi(CONFIG.WEIBO_API, '微博热搜'); }
+async function getToutiaoHot() { return fetchApi(CONFIG.TOUTIAO_API, '头条热搜'); }
+async function getZhihuHot() { return fetchApi(CONFIG.ZHIHU_API, '知乎热榜'); }
+async function getMaoyanMovie() { return fetchApi(CONFIG.MAOYAN_MOVIE_API, '猫眼电影'); }
+async function getMaoyanTv() { return fetchApi(CONFIG.MAOYAN_TV_API, '猫眼电视'); }
+async function getMaoyanWeb() { return fetchApi(CONFIG.MAOYAN_WEB_API, '猫眼网剧'); }
+async function getDouyinHot() { return fetchApi(CONFIG.DOUYIN_API, '抖音热搜'); }
+async function getBiliHot() { return fetchApi(CONFIG.BILI_API, 'B站热搜'); }
+async function getQuarkHot() { return fetchApi(CONFIG.QUARK_API, '夸克热点'); }
+async function getBaiduHot() { return fetchApi(CONFIG.BAIDU_HOT_API, '百度热搜'); }
+async function getBaiduTeleplay() { return fetchApi(CONFIG.BAIDU_TELEPLAY_API, '百度电视剧'); }
+async function getBaiduTieba() { return fetchApi(CONFIG.BAIDU_TIEBA_API, '百度贴吧'); }
+async function getDongchediHot() { return fetchApi(CONFIG.DONGCHEDI_API, '懂车帝热搜'); }
+
 // 获取Bing壁纸
 async function getBingWallpaper() {
   try {
@@ -1573,8 +1699,118 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   return html;
 }
 
+// 构建热点榜单模块
+function buildHotListModule(hotData) {
+  const tabs = [
+    { id: 'douyin', name: '抖音', data: hotData.douyin, type: 'list', config: 'DOUYIN',
+      map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
+    { id: 'bili', name: 'B站', data: hotData.bili, type: 'list', config: 'BILI',
+      map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
+    { id: 'weibo', name: '微博', data: hotData.weibo, type: 'list', config: 'WEIBO',
+      map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
+    { id: 'rednote', name: '小红书', data: hotData.rednote, type: 'list', config: 'REDNOTE',
+      map: item => ({ title: item.title, desc: `热度: ${item.score}`, link: item.link, rank: item.rank }) },
+    { id: 'toutiao', name: '头条', data: hotData.toutiao, type: 'list', config: 'TOUTIAO',
+      map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
+    { id: 'zhihu', name: '知乎', data: hotData.zhihu, type: 'list', config: 'ZHIHU',
+      map: item => ({ title: item.title, desc: item.hot_value_desc || item.detail, link: item.link, rank: null }) },
+    { id: 'quark', name: '夸克', data: hotData.quark, type: 'list', config: 'QUARK',
+      map: item => ({ title: item.title, desc: item.hot_value, link: item.link, rank: null }) },
+    { id: 'baidu', name: '百度', data: hotData.baiduHot, type: 'list', config: 'BAIDU',
+      map: item => ({ title: item.title, desc: item.desc, link: item.url, rank: item.rank }) },
+    { id: 'tieba', name: '贴吧', data: hotData.baiduTieba, type: 'list', config: 'TIEBA',
+      map: item => ({ title: item.title, desc: item.desc, link: item.url, rank: item.rank }) },
+    { id: 'dongchedi', name: '懂车帝', data: hotData.dongchedi, type: 'list', config: 'DONGCHEDI',
+      map: item => ({ title: item.title, desc: '', link: item.url, rank: null }) },
+    { id: 'movie', name: '电影', data: hotData.maoyanMovie, type: 'maoyan', config: 'MOVIE',
+      map: item => ({ title: item.movie_name, desc: `${item.box_office}${item.box_office_unit}` }) },
+    { id: 'tv', name: '剧集', data: hotData.maoyanTv, type: 'maoyan', config: 'TV',
+      map: item => ({ title: item.programme_name, desc: item.market_rate_desc }) },
+    { id: 'web', name: '网剧', data: hotData.maoyanWeb, type: 'maoyan', config: 'WEB',
+      map: item => ({ title: item.series_name, desc: item.curr_heat_desc }) },
+  ];
+
+  let tabsHtml = '';
+  
+  tabs.forEach((tab, index) => {
+    if (!CONFIG.SHOW_MODULES.HOT_LIST[tab.config]) return;
+    if (!tab.data || !tab.data.success || !tab.data.data) return;
+    
+    const rawList = tab.type === 'maoyan' ? tab.data.data.list : tab.data.data;
+    if (!Array.isArray(rawList) || rawList.length === 0) return;
+    
+    const items = rawList.slice(0, 10).map((item, idx) => {
+       const mapped = tab.map(item);
+       const rank = mapped.rank || idx + 1;
+       let rankColor = '#64748b'; // default
+       if (rank === 1) rankColor = '#ef4444'; // Red
+       else if (rank === 2) rankColor = '#f97316'; // Orange
+       else if (rank === 3) rankColor = '#facc15'; // Yellow
+       
+       // Marquee logic: if title is long (>16 chars), add scrolling class
+       const isLong = mapped.title.length > 16;
+       const titleHtml = isLong 
+         ? `<div class="ht-tt-scroll"><span class="ht-tt-inner">${mapped.title}</span></div>`
+         : `<div class="ht-tt">${mapped.title}</div>`;
+       
+       return `
+         <div class="ht-it">
+           <div class="ht-rk" style="color: ${rankColor}">${rank}</div>
+           <div class="ht-ct">
+             ${titleHtml}
+             <div class="ht-dc">${mapped.desc}</div>
+           </div>
+           ${mapped.link ? `<a href="${mapped.link}" class="ht-lk">🔗</a>` : ''}
+         </div>
+       `;
+    }).join('');
+    
+    tabsHtml += `
+      <input type="radio" name="hot-tabs" id="tab-${tab.id}" class="tb-inp" hidden>
+      <label for="tab-${tab.id}" class="tb-lbl" style="order: ${index + 1};">${tab.name}</label>
+      <div class="tb-cnt" style="order: 100; width: 100%;">
+         ${items}
+      </div>
+    `;
+  });
+  
+  if (!tabsHtml) return '';
+  
+  // Set the first radio to checked
+  tabsHtml = tabsHtml.replace('hidden', 'checked hidden');
+
+  return `
+    <div style="margin: 20px 0; background: #0f172a; border-radius: 12px; padding: 15px; border: 1px solid rgba(255,255,255,0.1);">
+       <div style="margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+         <div style="font-size: 16px;">🔥</div>
+         <div style="color: #fff; font-weight: bold; font-size: 16px;">实时热点</div>
+       </div>
+       <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+         ${tabsHtml}
+       </div>
+    </div>
+    <style>
+    .ht-it{display:flex;align-items:center;margin-bottom:12px;padding-bottom:12px;border-bottom:1px dashed rgba(255,255,255,0.05)}
+    .ht-it:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+    .ht-rk{width:24px;font-family:monospace;font-weight:bold;font-size:14px;margin-right:8px;text-align:center;flex-shrink:0}
+    .ht-ct{flex:1;overflow:hidden;min-width:0}
+    .ht-tt{color:#e2e8f0;font-size:13px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
+    .ht-tt-scroll{overflow:hidden;white-space:nowrap;width:100%;position:relative;height:24px;margin-bottom:2px}
+    .ht-tt-inner{display:inline-block;white-space:nowrap;color:#e2e8f0;font-size:13px;line-height:24px;animation:marquee 10s linear infinite}
+    .ht-dc{color:#64748b;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .ht-lk{color:#64748b;text-decoration:none;font-size:12px;margin-left:8px;opacity:0.5;flex-shrink:0}
+    .tb-lbl{padding:4px 12px;border-radius:99px;background:rgba(255,255,255,0.05);color:#94a3b8;font-size:11px;cursor:pointer;border:1px solid rgba(255,255,255,0.05);transition:all 0.2s;user-select:none}
+    .tb-inp:checked+.tb-lbl{background:rgba(244,63,94,0.15);color:#f43f5e;border-color:rgba(244,63,94,0.4);font-weight:bold}
+    .tb-cnt{display:none;margin-top:15px;max-height:400px;overflow-y:auto}
+    .tb-inp:checked+.tb-lbl+.tb-cnt{display:block;animation:fadeIn 0.3s ease}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+    @keyframes marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+    </style>
+  `;
+}
+
 // 构建HTML内容 - 科技感设计
-function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, aiNewsData, news60sData, bingData, kfcContent) {
+function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData) {
   const { dateTime, dayOfWeek, isThursday, simpleDate, time } = timeInfo;
 
   // 壁纸处理：如果获取成功且开关开启展示，否则展示默认深色背景
@@ -1800,7 +2036,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
         ">
           <div style="display: flex; align-items: center; gap: 8px;">
             <div style="width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981;"></div>
-            <div style="color: #10b981; font-weight: bold; font-family: monospace; letter-spacing: 1px; font-size: 13px;">世界摘要 // 60秒</div>
+            <div style="color: #10b981; font-weight: bold; font-family: monospace; letter-spacing: 1px; font-size: 13px;">60秒世界摘要</div>
           </div>
           <div style="color: #64748b; font-size: 10px; font-family: monospace;">${n.date}</div>
         </div>
@@ -1862,6 +2098,11 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
         </style>
       </div>
     `;
+  }
+
+  // 热点榜单
+  if (CONFIG.SHOW_MODULES.HOT_LIST) {
+     html += buildHotListModule(hotData);
   }
 
   // KFC
@@ -2119,11 +2360,165 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     `;
   }
 
+  if (CONFIG.SHOW_MODULES.FUEL && fuelData && fuelData.success) {
+    const f = fuelData.data;
+    let fuelItemsHtml = f.items.map(item => `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+        <div style="display: flex; flex-direction: column;">
+          <div style="color: #e2e8f0; font-size: 13px; font-weight: 500;">${item.name}</div>
+          <div style="color: #64748b; font-size: 10px;">${item.price_desc || ''}</div>
+        </div>
+        <div style="text-align: right;">
+          <div style="color: #38bdf8; font-weight: bold; font-family: monospace;">${item.price}</div>
+          <div style="font-size: 10px; color: ${item.diffColor || '#94a3b8'};">较昨 ${item.diffStr || '-'}</div>
+        </div>
+      </div>
+    `).join('');
+
+    html += `
+      <input type="checkbox" id="fuel-drawer-toggle" style="display: none;">
+      <label for="fuel-drawer-toggle" class="drawer-overlay" style="
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.5); z-index: 1001;
+        display: none; backdrop-filter: blur(2px);
+      "></label>
+      <div class="drawer-content fuel-drawer" style="
+        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
+        background: #0f172a; z-index: 1002;
+        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
+        padding: 20px; box-sizing: border-box;
+        border-left: 1px solid rgba(255,255,255,0.1);
+        overflow-y: auto;
+        transition: right 0.3s ease-in-out;
+      ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
+          <div style="color: #fff; font-size: 18px; font-weight: bold;">⛽ 汽油价格</div>
+          <label for="fuel-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
+        </div>
+        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 6px;">地区: ${f.region}</div>
+        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 15px;">更新时间: ${f.updated}</div>
+
+        <div>
+          ${fuelItemsHtml}
+        </div>
+
+        ${f.link ? `<div style="margin-top: 14px; display: flex; justify-content: flex-end;">
+           <a href="${f.link}" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 999px; color: #7dd3fc; font-size: 11px; text-decoration: none; letter-spacing: 0.3px;">
+             <span style="font-size: 12px;">🔗</span> 数据来源
+           </a>
+         </div>` : ''}
+      </div>
+      <style>
+        #fuel-drawer-toggle:checked ~ .drawer-overlay { display: block; }
+        #fuel-drawer-toggle:checked ~ .fuel-drawer { right: 0 !important; }
+      </style>
+    `;
+  }
+
+  if (CONFIG.SHOW_MODULES.MOYU && moyuData && moyuData.success) {
+    const m = moyuData.data;
+    const lunar = m.date && m.date.lunar ? m.date.lunar : {};
+    const week = m.progress && m.progress.week ? m.progress.week : {};
+    const month = m.progress && m.progress.month ? m.progress.month : {};
+    const year = m.progress && m.progress.year ? m.progress.year : {};
+    const nh = m.nextHoliday || {};
+    const nw = m.nextWeekend || {};
+    const cd = m.countdown || {};
+
+    const progressHtml = `
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">本周进度</div>
+          <div style="color: #06b6d4; font-weight: bold; font-family: monospace;">${week.percentage || 0}%</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">本月进度</div>
+          <div style="color: #06b6d4; font-weight: bold; font-family: monospace;">${month.percentage || 0}%</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">本年进度</div>
+          <div style="color: #06b6d4; font-weight: bold; font-family: monospace;">${year.percentage || 0}%</div>
+        </div>
+      </div>
+    `;
+
+    const countdownHtml = `
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">距离周末</div>
+          <div style="color: #10b981; font-weight: bold; font-family: monospace;">${cd.toWeekEnd || 0}</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">距离周五</div>
+          <div style="color: #10b981; font-weight: bold; font-family: monospace;">${cd.toFriday || 0}</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">距离月末</div>
+          <div style="color: #f59e0b; font-weight: bold; font-family: monospace;">${cd.toMonthEnd || 0}</div>
+        </div>
+        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+          <div style="color: #94a3b8; font-size: 11px;">距离年末</div>
+          <div style="color: #f59e0b; font-weight: bold; font-family: monospace;">${cd.toYearEnd || 0}</div>
+        </div>
+      </div>
+    `;
+
+    const holidayHtml = `
+      <div style="margin-top: 12px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+        <div style="color: #a78bfa; font-size: 12px; font-weight: bold; margin-bottom: 6px;">下一个节日</div>
+        <div style="color: #e2e8f0; font-size: 12px;">${nh.name || '暂无'} · ${nh.date || ''}</div>
+        <div style="color: #94a3b8; font-size: 10px;">倒计时: ${nh.until || 0} 天</div>
+      </div>
+      <div style="margin-top: 8px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
+        <div style="color: #a78bfa; font-size: 12px; font-weight: bold; margin-bottom: 6px;">下一个周末</div>
+        <div style="color: #e2e8f0; font-size: 12px;">${nw.date || ''} · ${nw.weekday || ''}</div>
+        <div style="color: #94a3b8; font-size: 10px;">还剩: ${nw.daysUntil || 0} 天</div>
+      </div>
+    `;
+
+    html += `
+      <input type="checkbox" id="moyu-drawer-toggle" style="display: none;">
+      <label for="moyu-drawer-toggle" class="drawer-overlay" style="
+        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.5); z-index: 1001;
+        display: none; backdrop-filter: blur(2px);
+      "></label>
+      <div class="drawer-content moyu-drawer" style="
+        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
+        background: #0f172a; z-index: 1002;
+        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
+        padding: 20px; box-sizing: border-box;
+        border-left: 1px solid rgba(255,255,255,0.1);
+        overflow-y: auto;
+        transition: right 0.3s ease-in-out;
+      ">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
+          <div style="color: #fff; font-size: 18px; font-weight: bold;">🐟 摸鱼日报</div>
+          <label for="moyu-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
+        </div>
+        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 8px;">${m.date?.gregorian || ''} · ${m.date?.weekday || ''}</div>
+        <div style="color: #64748b; font-size: 11px; margin-bottom: 12px;">农历: ${lunar.yearCN || ''}${lunar.monthCN || ''}${lunar.dayCN || ''} · ${lunar.zodiac || ''}</div>
+
+        ${progressHtml}
+        ${countdownHtml}
+        ${holidayHtml}
+
+        ${m.moyuQuote ? `<div style="margin-top: 12px; background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; color: #e2e8f0; font-size: 13px; line-height: 1.6;">${m.moyuQuote}</div>` : ''}
+      </div>
+      <style>
+        #moyu-drawer-toggle:checked ~ .drawer-overlay { display: block; }
+        #moyu-drawer-toggle:checked ~ .moyu-drawer { right: 0 !important; }
+      </style>
+    `;
+  }
+
   // 菜单项配置
   const menuItems = [];
   if (CONFIG.SHOW_MODULES.AI_NEWS && aiNewsData && aiNewsData.success) menuItems.push({ id: 'ai-drawer-toggle', icon: '🤖', color: '#3b82f6' });
   if (CONFIG.SHOW_MODULES.GOLD && goldData && goldData.success) menuItems.push({ id: 'gold-drawer-toggle', icon: '🏆', color: '#f59e0b' });
   if (CONFIG.SHOW_MODULES.EXCHANGE && rateData && rateData.success) menuItems.push({ id: 'rate-drawer-toggle', icon: '💰', color: '#10b981' });
+  if (CONFIG.SHOW_MODULES.FUEL && fuelData && fuelData.success) menuItems.push({ id: 'fuel-drawer-toggle', icon: '⛽', color: '#f97316' });
+  if (CONFIG.SHOW_MODULES.MOYU && moyuData && moyuData.success) menuItems.push({ id: 'moyu-drawer-toggle', icon: '🐟', color: '#06b6d4' });
   if (CONFIG.SHOW_MODULES.HISTORY && historyData && historyData.success) menuItems.push({ id: 'history-drawer-toggle', icon: '📜', color: '#8b5cf6' });
 
   // 扇形轮盘菜单 (True Pie Chart with Pure CSS Animation)
@@ -2267,11 +2662,27 @@ async function main() {
       historyResult,
       rateResult,
       goldResult,
+      fuelResult,
+      moyuResult,
       aiNewsResult,
       news60sResult,
       bingResult,
       kfcResult,
-      hitokotoResult
+      hitokotoResult,
+      rednoteResult,
+      weiboResult,
+      toutiaoResult,
+      zhihuResult,
+      maoyanMovieResult,
+      maoyanTvResult,
+      maoyanWebResult,
+      douyinResult,
+      biliResult,
+      quarkResult,
+      baiduHotResult,
+      baiduTeleplayResult,
+      baiduTiebaResult,
+      dongchediResult
     ] = await Promise.allSettled([
       getCurrentWeather(),
       getWeatherForecast(),
@@ -2281,11 +2692,27 @@ async function main() {
       getHistoryToday(),
       getExchangeRate(),
       getGoldPrice(),
+      getFuelPrice(),
+      getMoyuDaily(),
       getAiNews(),
       get60sNews(),
       getBingWallpaper(),
       getKfcContent(timeInfo.isThursday),
-      getHitokoto()
+      getHitokoto(),
+      getRedNoteHot(),
+      getWeiboHot(),
+      getToutiaoHot(),
+      getZhihuHot(),
+      getMaoyanMovie(),
+      getMaoyanTv(),
+      getMaoyanWeb(),
+      getDouyinHot(),
+      getBiliHot(),
+      getQuarkHot(),
+      getBaiduHot(),
+      getBaiduTeleplay(),
+      getBaiduTieba(),
+      getDongchediHot()
     ]);
 
     const weatherData = weatherResult.status === 'fulfilled' ? weatherResult.value : { success: false, error: weatherResult.reason };
@@ -2296,11 +2723,30 @@ async function main() {
     const historyData = historyResult.status === 'fulfilled' ? historyResult.value : { success: false, error: historyResult.reason };
     const rateData = rateResult.status === 'fulfilled' ? rateResult.value : { success: false, error: rateResult.reason };
     const goldData = goldResult.status === 'fulfilled' ? goldResult.value : { success: false, error: goldResult.reason };
+    const fuelData = fuelResult.status === 'fulfilled' ? fuelResult.value : { success: false, error: fuelResult.reason };
+    const moyuData = moyuResult.status === 'fulfilled' ? moyuResult.value : { success: false, error: moyuResult.reason };
     const aiNewsData = aiNewsResult.status === 'fulfilled' ? aiNewsResult.value : { success: false, error: aiNewsResult.reason };
     const news60sData = news60sResult.status === 'fulfilled' ? news60sResult.value : { success: false, error: news60sResult.reason };
     const bingData = bingResult.status === 'fulfilled' ? bingResult.value : { success: false, error: bingResult.reason };
     const kfcContent = kfcResult.status === 'fulfilled' ? kfcResult.value : { success: false, content: '' };
     const hitokotoData = hitokotoResult.status === 'fulfilled' ? hitokotoResult.value : null;
+
+    const hotData = {
+        rednote: rednoteResult.status === 'fulfilled' ? rednoteResult.value : { success: false },
+        weibo: weiboResult.status === 'fulfilled' ? weiboResult.value : { success: false },
+        toutiao: toutiaoResult.status === 'fulfilled' ? toutiaoResult.value : { success: false },
+        zhihu: zhihuResult.status === 'fulfilled' ? zhihuResult.value : { success: false },
+        maoyanMovie: maoyanMovieResult.status === 'fulfilled' ? maoyanMovieResult.value : { success: false },
+        maoyanTv: maoyanTvResult.status === 'fulfilled' ? maoyanTvResult.value : { success: false },
+        maoyanWeb: maoyanWebResult.status === 'fulfilled' ? maoyanWebResult.value : { success: false },
+        douyin: douyinResult.status === 'fulfilled' ? douyinResult.value : { success: false },
+        bili: biliResult.status === 'fulfilled' ? biliResult.value : { success: false },
+        quark: quarkResult.status === 'fulfilled' ? quarkResult.value : { success: false },
+        baiduHot: baiduHotResult.status === 'fulfilled' ? baiduHotResult.value : { success: false },
+        baiduTeleplay: baiduTeleplayResult.status === 'fulfilled' ? baiduTeleplayResult.value : { success: false },
+        baiduTieba: baiduTiebaResult.status === 'fulfilled' ? baiduTiebaResult.value : { success: false },
+        dongchedi: dongchediResult.status === 'fulfilled' ? dongchediResult.value : { success: false }
+    };
 
     // 4. 检查关键数据
     if (!hitokotoData) {
@@ -2314,7 +2760,7 @@ async function main() {
     }
 
     // 6. 构建HTML内容
-    const htmlContent = buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, aiNewsData, news60sData, bingData, kfcContent);
+    const htmlContent = buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData);
 
     // 7. 发送消息
     const sendResult = await sendMessage(htmlContent, timeInfo.dateTime, uidResult.uid);
