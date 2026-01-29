@@ -3,8 +3,12 @@ name: Daily Message Sender
 
 on:
   schedule:
-    # 每天北京时间8点运行 (UTC 0点)
-    - cron: '0 0 * * *'
+    # 每天北京时间7:30运行 (UTC 23:30) - 避开整点高峰
+    - cron: '30 23 * * *'
+    # 每天北京时间11:30运行 (UTC 03:30) - 延时任务1
+    - cron: '30 3 * * *'
+    # 每天北京时间17:00运行 (UTC 09:00) - 延时任务2
+    - cron: '0 9 * * *'
   # 允许手动触发
   workflow_dispatch:
 
@@ -41,6 +45,7 @@ jobs:
         HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
         HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
         HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
+        TANSHU_API_KEY: ${{ secrets.TANSHU_API_KEY }}
       run: |
         echo "=== 测试环境变量 ==="
         echo ""

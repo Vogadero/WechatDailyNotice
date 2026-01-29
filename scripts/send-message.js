@@ -2,6 +2,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const minify = require('html-minifier').minify;
 
 // 从命令行参数判断是否是定时触发
 const isScheduled = process.argv[2] === 'true';
@@ -244,8 +245,8 @@ async function getLatestUid() {
       }
     }
 
-    // 存储到文件（无论是定时还是手动都存储，记录触发方式）
-    if (latestUid) {
+    // 存储到文件（仅定时任务存储，记录触发方式）
+    if (latestUid && isScheduled) {
       try {
         const dataDir = path.join(__dirname, '../data');
         if (!fs.existsSync(dataDir)) {
@@ -254,18 +255,22 @@ async function getLatestUid() {
         const uidData = {
           uid: latestUid,
           updated: new Date().toISOString(),
-          trigger: isScheduled ? 'scheduled' : 'manual',
-          source: isScheduled ? 'api' : 'local_storage'
+          trigger: 'scheduled',
+          source: 'api'
         };
         fs.writeFileSync(
           path.join(dataDir, 'latest_uid.json'),
           JSON.stringify(uidData, null, 2)
         );
-        console.log(`✅ UID已存储到本地文件 (触发方式: ${isScheduled ? '定时任务' : '手动触发'})`);
+        console.log(`✅ UID已存储到本地文件 (触发方式: 定时任务)`);
       } catch (error) {
         console.error('存储UID到文件失败:', error.message);
       }
+    } else if (latestUid && !isScheduled) {
+      console.log('ℹ️ 手动触发模式，不更新本地UID文件');
+    }
 
+    if (latestUid) {
       return {
         success: true,
         uid: latestUid
@@ -882,7 +887,26 @@ async function getExchangeRate() {
       };
 
       const historyData = getHistoryData();
-      const historyRates = historyData.exchange || {};
+      let historyExchange = historyData.exchange || {};
+      let lastRates = historyExchange;
+      let historyDate = '';
+
+      if (historyExchange.items) {
+        lastRates = historyExchange.items;
+        historyDate = historyExchange.date;
+      }
+
+      // Determine comparison label
+      let diffLabel = '';
+      if (historyDate) {
+         try {
+           const d = new Date(historyDate);
+           // if (!isNaN(d.getTime())) {
+           //   diffLabel = `较${d.getMonth() + 1}-${d.getDate()}`;
+           // }
+         } catch (e) { }
+      }
+
       const newHistoryRates = {};
 
       for (const cur of targetCurrencies) {
@@ -892,7 +916,7 @@ async function getExchangeRate() {
           const rate = parseFloat((1 / item.rate).toFixed(4));
           
           // 计算涨跌
-          const lastRate = historyRates[cur] || 0;
+          const lastRate = lastRates[cur] || 0;
           let diffStr = '';
           let diffColor = '#94a3b8'; // grey
           
@@ -923,7 +947,11 @@ async function getExchangeRate() {
       }
       
       // Save updated history
-      historyData.exchange = newHistoryRates;
+      const todayStr = new Date().toISOString().split('T')[0];
+      historyData.exchange = {
+        items: newHistoryRates,
+        date: todayStr
+      };
       saveHistoryData(historyData);
 
       console.log(`获取到汇率数据: ${displayRates.length} 条`);
@@ -931,7 +959,10 @@ async function getExchangeRate() {
         success: true,
         data: {
           updated: response.data.data.updated,
-          rates: displayRates
+          next_updated: response.data.data.next_updated,
+          base_code: response.data.data.base_code,
+          rates: displayRates,
+          diffLabel: diffLabel
         }
       };
     } else {
@@ -1002,6 +1033,64 @@ async function get60sNews() {
   }
 }
 
+// 获取白银数据 (Shanghai Gold, Futures, London)
+async function getSilverData() {
+  try {
+    console.log('正在获取白银数据...');
+    if (!CONFIG.TANSHU_API_KEY) throw new Error('未配置TANSHU_API_KEY');
+
+    // Parallel fetch for 3 endpoints
+    const [shResult, futureResult, londonResult] = await Promise.allSettled([
+      axios.get(CONFIG.TANSHU_SILVER_SH_API, { params: { key: CONFIG.TANSHU_API_KEY }, timeout: 10000 }),
+      axios.get(CONFIG.TANSHU_SILVER_FUTURE_API, { params: { key: CONFIG.TANSHU_API_KEY }, timeout: 10000 }),
+      axios.get(CONFIG.TANSHU_SILVER_LONDON_API, { params: { key: CONFIG.TANSHU_API_KEY }, timeout: 10000 })
+    ]);
+
+    const data = {
+      shanghai: [],
+      future: [],
+      london: []
+    };
+
+    // Process Shanghai Gold Exchange (Object -> Array)
+    if (shResult.status === 'fulfilled' && shResult.value.data.code === 1) {
+      const list = shResult.value.data.data.list;
+      // Convert object to array if it's an object
+      data.shanghai = typeof list === 'object' && !Array.isArray(list) 
+        ? Object.values(list) 
+        : (Array.isArray(list) ? list : []);
+    } else {
+        console.warn('上海白银接口失败:', shResult.reason || shResult.value?.data?.msg);
+    }
+
+    // Process Shanghai Futures (Array)
+    if (futureResult.status === 'fulfilled' && futureResult.value.data.code === 1) {
+      data.future = futureResult.value.data.data.list || [];
+    } else {
+        console.warn('上海期货白银接口失败:', futureResult.reason || futureResult.value?.data?.msg);
+    }
+
+    // Process London Market (Array)
+    if (londonResult.status === 'fulfilled' && londonResult.value.data.code === 1) {
+      data.london = londonResult.value.data.data.list || [];
+    } else {
+        console.warn('伦敦白银接口失败:', londonResult.reason || londonResult.value?.data?.msg);
+    }
+
+    return {
+      success: true,
+      data: data
+    };
+
+  } catch (error) {
+    console.error('获取白银数据失败:', error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
 // 获取黄金价格
 async function getGoldPrice() {
   try {
@@ -1016,13 +1105,31 @@ async function getGoldPrice() {
       
       const data = response.data.data;
       const historyData = getHistoryData();
-      const historyGold = historyData.gold || {};
+      let historyGold = historyData.gold || {};
+      let lastPrices = historyGold;
+      let historyDate = '';
+      
+      if (historyGold.items) {
+          lastPrices = historyGold.items;
+          historyDate = historyGold.date;
+      }
+      
+      let diffLabel = '';
+      if (historyDate) {
+         try {
+           const d = new Date(historyDate);
+           // if (!isNaN(d.getTime())) {
+           //   diffLabel = `较${d.getMonth() + 1}-${d.getDate()}`;
+           // }
+         } catch (e) { }
+      }
+
       const newHistoryGold = {};
       
       // Compare Metals
       if (data.metals && Array.isArray(data.metals)) {
           data.metals = data.metals.map(item => {
-              const lastPrice = historyGold[item.name] || 0;
+              const lastPrice = lastPrices[item.name] || 0;
               const currentPrice = parseFloat(item.today_price);
               let diffStr = '';
               let diffColor = '#94a3b8';
@@ -1049,12 +1156,19 @@ async function getGoldPrice() {
           });
       }
       
-      historyData.gold = newHistoryGold;
+      const todayStr = new Date().toISOString().split('T')[0];
+      historyData.gold = {
+          items: newHistoryGold,
+          date: todayStr
+      };
       saveHistoryData(historyData);
 
       return {
         success: true,
-        data: data
+        data: {
+            ...data,
+            diffLabel: diffLabel
+        }
       };
     } else {
       throw new Error(`黄金价格API返回错误: ${response.data.message}`);
@@ -1068,63 +1182,118 @@ async function getGoldPrice() {
   }
 }
 
+// 获取汽油价格 (使用探数API)
 async function getFuelPrice() {
   try {
     console.log('正在获取汽油价格...');
-    const response = await axios.get(CONFIG.FUEL_API, {
-      params: {
-        region: CONFIG.LOCATION,
-        encoding: 'json'
-      },
+    
+    // 检查API Key
+    if (!CONFIG.TANSHU_API_KEY) {
+       console.log('⚠️ 未配置TANSHU_API_KEY，尝试使用旧接口...');
+       // 如果没有key，可以回退到旧逻辑，但用户明确要求替换。
+       // 这里为了兼容性，如果旧配置还在且新配置不在，可以用旧的，但最好直接报错提示。
+       // 暂时报错提示。
+       throw new Error('未配置TANSHU_API_KEY');
+    }
+
+    // 1. 获取省份油价列表
+    const listResponse = await axios.get(CONFIG.TANSHU_FUEL_LIST_API, {
+      params: { key: CONFIG.TANSHU_API_KEY },
       timeout: 10000
     });
 
-    if (response.data.code === 200) {
-      const data = response.data.data;
-      const historyData = getHistoryData();
-      const historyFuel = historyData.fuel || {};
-      const newHistoryFuel = {};
+    if (listResponse.data.code !== 1) {
+      throw new Error(`获取油价列表失败: ${listResponse.data.msg}`);
+    }
 
-      if (data.items && Array.isArray(data.items)) {
-        data.items = data.items.map(item => {
-          const currentPrice = parseFloat(item.price);
-          const lastPrice = historyFuel[item.name] || 0;
-          let diffStr = '';
-          let diffColor = '#94a3b8';
+    const provinceName = '浙江'; // 筛选浙江
+    const provinceData = listResponse.data.data.list.find(p => p.province.includes(provinceName));
 
-          if (lastPrice > 0) {
-            const diff = currentPrice - lastPrice;
-            if (diff > 0.01) {
-              diffStr = `↑ ${diff.toFixed(2)}`;
-              diffColor = '#ef4444';
-            } else if (diff < -0.01) {
-              diffStr = `↓ ${Math.abs(diff).toFixed(2)}`;
-              diffColor = '#22c55e';
-            } else {
-              diffStr = '-';
-            }
-          }
+    if (!provinceData) {
+      throw new Error(`未找到 ${provinceName} 的油价数据`);
+    }
 
-          newHistoryFuel[item.name] = currentPrice;
-
-          return {
-            ...item,
-            diffStr,
-            diffColor
-          };
-        });
+    // 2. 获取油价行情 (涨跌趋势)
+    let trendData = {};
+    try {
+      const trendResponse = await axios.get(CONFIG.TANSHU_FUEL_TREND_API, {
+        params: { 
+          key: CONFIG.TANSHU_API_KEY,
+          province: provinceData.province 
+        },
+        timeout: 10000
+      });
+      
+      if (trendResponse.data.code === 1) {
+        trendData = trendResponse.data.data;
+        console.log(`获取到 ${provinceName} 油价行情: 下次调价 ${trendData.next_change_time}`);
+      } else {
+        console.warn(`获取油价行情失败: ${trendResponse.data.msg}`);
       }
+    } catch (e) {
+      console.warn('获取油价行情API出错:', e.message);
+    }
 
-      historyData.fuel = newHistoryFuel;
-      saveHistoryData(historyData);
+    // 3. 组装数据
+    const fuelTypes = [
+      { key: '0h', name: '0#柴' },
+      { key: '89h', name: '89#' },
+      { key: '90h', name: '90#' },
+      { key: '92h', name: '92#' },
+      { key: '93h', name: '93#' },
+      { key: '95h', name: '95#' },
+      { key: '97h', name: '97#' },
+      { key: '98h', name: '98#' }
+    ];
+
+    const items = fuelTypes.map(type => {
+      const price = provinceData[type.key];
+      if (!price || price.trim() === '') return null; // 过滤空数据
+
+      const trend = trendData[type.key] || {};
+      
+      let diffStr = '-';
+      let diffColor = '#94a3b8';
+
+      // 涨跌信息
+      if (trend.change) {
+        const change = parseFloat(trend.change);
+        if (change > 0) {
+          diffStr = `↑${Math.abs(change)}`;
+          diffColor = '#ef4444';
+        } else if (change < 0) {
+          diffStr = `↓${Math.abs(change)}`;
+          diffColor = '#22c55e';
+        }
+      }
+      
+      // 涨跌幅百分比
+      let changePercent = trend.change_percent || '';
+
+      // 上次调整前价格
+      let beforePrice = trend.change_before_price || '';
 
       return {
-        success: true,
-        data: data
+        name: type.name,
+        price: price,
+        diffStr,
+        diffColor,
+        changePercent,
+        beforePrice
       };
-    } else {
-      throw new Error(`汽油价格API返回错误: ${response.data.message}`);
-    }
+    }).filter(Boolean); // 移除null
+
+    return {
+      success: true,
+      data: {
+        province: provinceData.province,
+        updated: provinceData.date,
+        items: items,
+        next_change: trendData.next_change_time, // 下次调价时间
+        before_change: trendData.before_change_time // 上次调价时间
+      }
+    };
+
   } catch (error) {
     console.error('获取汽油价格失败:', error.message);
     return {
@@ -1307,33 +1476,10 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   const sunX = 100 + 80 * Math.cos(sunRad);
   const sunY = 100 - 80 * Math.sin(sunRad);
 
-  // 基础卡片样式
-  const cardStyle = `
-    flex: 0 0 100%; 
-    scroll-snap-align: center; 
-    background: rgba(16, 24, 40, 0.6); 
-    border-radius: 16px; 
-    border: 1px solid rgba(0, 243, 255, 0.15); 
-    padding: 12px; 
-    box-sizing: border-box;
-    backdrop-filter: blur(12px);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
-    position: relative;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  `;
-
-  const neonGlow = `
-    position: absolute;
-    top: -50%;
-    left: -50%;
-    width: 200%;
-    height: 200%;
-    background: radial-gradient(circle at 50% 50%, rgba(0, 243, 255, 0.03) 0%, transparent 50%);
-    pointer-events: none;
-    z-index: 0;
-  `;
+  // 基础卡片样式 (Moved to CSS)
+  // const cardStyle = ''; // Deprecated, using class .wc
+  
+  // const neonGlow = ''; // Deprecated, using class .wng
 
   // slide3: Life Indices
   let lifeIndicesHtml = '';
@@ -1364,7 +1510,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
     const stepPercent = 100 / count;
     
     // 1. Define Keyframes
-    cssStyles += `<style>
+    cssStyles += `
       /* Text Vertical Scroll Animation */
       @keyframes scroll-text-${uniqueId} {
         0% { transform: translateY(0); }
@@ -1416,17 +1562,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
         `;
 
         gridItems += `
-          <div id="grid-item-${uniqueId}-${i}" style="
-            background: rgba(255,255,255,0.03); 
-            border-color: rgba(255,255,255,0.05);
-            padding: 6px 8px; 
-            border-radius: 8px; 
-            border: 1px solid rgba(255,255,255,0.05);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            transition: all 0.3s ease;
-          ">
+          <div id="grid-item-${uniqueId}-${i}" class="wgi">
             <div style="font-size: 16px;">${icon}</div>
             <div style="flex: 1; min-width: 0;">
               <div style="font-size: 11px; color: #a78bfa; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.name}</div>
@@ -1438,15 +1574,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
         // 3. Advice Item
         let adviceText = item.description || item.detail || item.category || item.text || item.desc || "暂无详细建议";
         adviceItems += `
-            <div style="
-                height: 36px; 
-                display: flex; 
-                align-items: center; 
-                font-size: 12px; 
-                color: #e2e8f0; 
-                width: 100%;
-                overflow: hidden;
-            ">
+            <div class="wai">
                 <span style="color: #f472b6; margin-right: 8px; font-weight: bold; flex-shrink: 0; background: rgba(0,0,0,0.4); z-index: 2; padding-right: 6px;">${item.name}</span>
                 <div style="flex: 1; overflow: hidden; white-space: nowrap;">
                     <span class="h-scroll-${uniqueId}">${adviceText}</span>
@@ -1457,15 +1585,16 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
     
     cssStyles += '</style>';
   } else {
+    cssStyles += '</style>'; // Close style tag even if empty
     gridItems = '<div style="color: #64748b; font-size: 12px; text-align: center; padding: 12px; grid-column: span 2;">暂无生活指数数据</div>';
     adviceItems = '<div style="color: #64748b; font-size: 11px; height: 36px; display: flex; align-items: center;">暂无建议</div>';
   }
 
   // slide1: 实时天气 + 日出日落可视化
   const slide1 = `
-    <div class="slide-item-${uniqueId}" data-index="0" style="${cardStyle}">
+    <div class="slide-item-${uniqueId} wc" data-index="0">
       ${cssStyles}
-      <div style="${neonGlow}"></div>
+      <div class="wng"></div>
       <div style="position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column;">
         <!-- Header -->
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
@@ -1498,33 +1627,33 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
         </div>
 
         <!-- Details Grid -->
-        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 25px;">
-           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
+        <div class="wdg">
+           <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">💧</div>
              <div style="font-size: 10px; color: #64748b;">湿度</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.humidity}%</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
+           <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">🌬️</div>
              <div style="font-size: 10px; color: #64748b;">${w.wind_direction}</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.wind_power}</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
+           <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">⏲️</div>
              <div style="font-size: 10px; color: #64748b;">气压</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.pressure}hPa</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
+           <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">☔</div>
              <div style="font-size: 10px; color: #64748b;">降水</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.precipitation}mm</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
+           <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">😷</div>
              <div style="font-size: 10px; color: #64748b;">PM2.5</div>
              <div style="font-size: 12px; color: #e2e8f0;">${w.pm25}</div>
            </div>
-           <div style="background: rgba(255,255,255,0.03); padding: 6px; border-radius: 8px; text-align: center;">
+           <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">🍃</div>
              <div style="font-size: 10px; color: #64748b;">空气 ${w.aqi || ''}</div>
              <div style="font-size: 12px; color: ${w.airQuality === '优' ? '#4ade80' : '#facc15'};">${w.airQuality}</div>
@@ -1561,15 +1690,9 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   // slide2: Forecast
   let forecastHtml = '';
   forecastDays.forEach((day, index) => {
+    const borderStyle = index === 0 ? 'border-left-color: #00f3ff;' : '';
     forecastHtml += `
-      <div style="
-        display: flex; align-items: center; justify-content: space-between; 
-        padding: 10px 12px; 
-        background: rgba(255,255,255,0.02); 
-        border-radius: 8px; 
-        margin-bottom: 8px;
-        border-left: 3px solid ${index === 0 ? '#00f3ff' : 'rgba(255,255,255,0.1)'};
-      ">
+      <div class="wfi" style="${borderStyle}">
         <div style="display: flex; flex-direction: column; width: 60px;">
           <span style="font-size: 14px; color: #e2e8f0;">${day.dayName}</span>
           <span style="font-size: 10px; color: #64748b;">${day.dayCondition}</span>
@@ -1589,8 +1712,8 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   });
 
   const slide2 = `
-    <div class="slide-item-${uniqueId}" data-index="1" style="${cardStyle}">
-      <div style="${neonGlow}"></div>
+    <div class="slide-item-${uniqueId} wc" data-index="1">
+      <div class="wng"></div>
         <div style="position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column;">
         <!-- Cleaned up Header -->
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-shrink: 0;">
@@ -1810,37 +1933,28 @@ function buildHotListModule(hotData) {
 }
 
 // 构建HTML内容 - 科技感设计
-function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData) {
+function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, silverData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData) {
   const { dateTime, dayOfWeek, isThursday, simpleDate, time } = timeInfo;
 
   // 壁纸处理：如果获取成功且开关开启展示，否则展示默认深色背景
-  let bgStyle = '';
   let headerOverlay = '';
+
+  // Compact Drawer Helper
+  const genDrawer = (id, icon, title, content, cls='') => `
+    <input type="checkbox" id="${id}" style="display:none">
+    <label for="${id}" class="do"></label>
+    <div class="dc ${id}-d ${cls}"><div class="dh"><div class="dt">${icon} ${title}</div><label for="${id}" class="dx">✕</label></div>${content}</div>
+    <style>#${id}:checked~.do{display:block}#${id}:checked~.${id}-d{right:0!important}</style>
+  `;
 
   if (CONFIG.SHOW_MODULES.BING_WALLPAPER && bingData && bingData.success) {
     const b = bingData.data;
     // 使用封面图作为顶部大图，并添加遮罩及渐变过渡到深色背景
     headerOverlay = `
-      <div style="
-        position: relative; 
-        width: 100%; 
-        height: 220px; 
-        background: url('${b.cover}') no-repeat center center; 
-        background-size: cover;
-      ">
-        <div style="
-          position: absolute; 
-          top: 0; left: 0; width: 100%; height: 100%;
-          background: linear-gradient(to bottom, rgba(2,4,10,0.1) 0%, rgba(2,4,10,0.8) 80%, rgba(2,4,10,1) 100%);
-        "></div>
-        <div style="
-          position: absolute;
-          bottom: 10px;
-          right: 15px;
-          text-align: right;
-          z-index: 15;
-        ">
-          <div style="color: rgba(255,255,255,0.7); font-size: 10px; text-shadow: 0 1px 2px rgba(0,0,0,0.9); max-width: 250px; line-height: 1.2;">${b.copyright}</div>
+      <div style="position:relative;width:100%;height:220px;background:url('${b.cover}') no-repeat center center;background-size:cover">
+        <div style="position:absolute;top:0;left:0;width:100%;height:100%;background:linear-gradient(to bottom,rgba(2,4,10,0.1) 0%,rgba(2,4,10,0.8) 80%,rgba(2,4,10,1) 100%)"></div>
+        <div style="position:absolute;bottom:10px;right:15px;text-align:right;z-index:15">
+          <div style="color:rgba(255,255,255,0.7);font-size:10px;text-shadow:0 1px 2px rgba(0,0,0,0.9);max-width:250px;line-height:1.2">${b.copyright}</div>
         </div>
       </div>
     `;
@@ -1848,155 +1962,59 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
   // 整体容器：深色背景，科技感字体
   let html = `
-    <div style="
-      background-color: #02040a; 
-      background-image: 
-        radial-gradient(at 0% 0%, rgba(29, 78, 216, 0.15) 0px, transparent 50%), 
-        radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
-      color: #e2e8f0; 
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
-      max-width: 100%; 
-      padding: 0;
-      min-height: 100vh;
-      overflow-x: hidden; 
-    ">
-    
+    <div style="background-color:#02040a;background-image:radial-gradient(at 0% 0%,rgba(29,78,216,0.15) 0px,transparent 50%),radial-gradient(at 100% 0%,rgba(139,92,246,0.15) 0px,transparent 50%);color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;max-width:100%;padding:0;min-height:100vh;overflow-x:hidden">
     ${headerOverlay}
   `;
 
   // 顶部：一言卡片 (类似HUD显示的样式) - 调整位置
-  // 去除负 margin，让布局更自然，避免遮挡
   const paddingTop = (CONFIG.SHOW_MODULES.BING_WALLPAPER && bingData && bingData.success) ? '10px' : '24px';
-  const showYiYan = CONFIG.SHOW_MODULES.yiYan;
-
   html += `
-    <div style="padding: ${paddingTop} 20px 10px;">
-      <div style="border-left: 3px solid #00f3ff; padding-left: 15px; margin-bottom: 20px;">
-        <div style="color: ${CONFIG.SHOW_MODULES.BING_WALLPAPER && bingData && bingData.success ? '#94a3b8' : '#64748b'}; font-size: 12px; letter-spacing: 2px; margin-bottom: 4px;">每日情报 / ${simpleDate}</div>
-        <div style="color: #fff; font-size: 22px; font-weight: bold; letter-spacing: 0.5px;">${dayOfWeek}</div>
+    <div style="padding:${paddingTop} 20px 10px">
+      <div style="border-left:3px solid #00f3ff;padding-left:15px;margin-bottom:20px">
+        <div style="color:${CONFIG.SHOW_MODULES.BING_WALLPAPER&&bingData&&bingData.success?'#94a3b8':'#64748b'};font-size:12px;letter-spacing:2px;margin-bottom:4px">每日情报 / ${simpleDate}</div>
+        <div style="color:#fff;font-size:22px;font-weight:bold;letter-spacing:0.5px">${dayOfWeek}</div>
       </div>
-
-      ${showYiYan ? `
-      <div style="
-        background: rgba(255, 255, 255, 0.03); 
-        border: 1px solid rgba(255, 255, 255, 0.1); 
-        border-radius: 12px; 
-        padding: 16px; 
-        position: relative;
-        backdrop-filter: blur(5px);
-        margin-bottom: 16px;
-      ">
-        <div style="color: #94a3b8; font-size: 14px; line-height: 1.6; font-style: italic; margin-bottom: 12px;">
-          "${hitokotoData.hitokoto}"
-        </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px;">
-          <div style="color: #00f3ff;">来源: ${hitokotoData.from}</div>
-          <div style="color: #475569;">${hitokotoData.type}</div>
-        </div>
-      </div>
-      ` : ''}
+      ${CONFIG.SHOW_MODULES.yiYan ? `<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;position:relative;backdrop-filter:blur(5px);margin-bottom:16px">
+        <div style="color:#94a3b8;font-size:14px;line-height:1.6;font-style:italic;margin-bottom:12px">"${hitokotoData.hitokoto}"</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px"><div style="color:#00f3ff">来源: ${hitokotoData.from}</div><div style="color:#475569">${hitokotoData.type}</div></div>
+      </div>` : ''}
     </div>
   `;
 
-
-  // 运势跑马灯 (在顶部信息下方)
+  // 运势跑马灯
   if (CONFIG.SHOW_MODULES.LUCK && luckData && luckData.success) {
     const l = luckData.data;
-    const scrollText = `🔮 今日运势: ${l.luck_desc}  •  ${l.luck_tip}  •  运势指数: ${l.luck_rank}  •  ${l.luck_desc}  •  ${l.luck_tip}`; // 重复内容以确保填满
-
+    const scrollText = `🔮 今日运势: ${l.luck_desc}  •  ${l.luck_tip}  •  运势指数: ${l.luck_rank}  •  ${l.luck_desc}  •  ${l.luck_tip}`; 
     html += `
-      <div style="
-        margin: 0 0 20px 0;
-        background: rgba(139, 92, 246, 0.1);
-        border-top: 1px solid rgba(139, 92, 246, 0.3);
-        border-bottom: 1px solid rgba(139, 92, 246, 0.3);
-        padding: 8px 0;
-        overflow: hidden;
-        position: relative;
-        white-space: nowrap;
-      ">
-        <div style="
-          display: inline-block;
-          font-size: 12px;
-          color: #a78bfa;
-          font-weight: 500;
-          letter-spacing: 1px;
-          animation: marquee 20s linear infinite;
-        ">
-          ${scrollText} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${scrollText}
-        </div>
-        <!-- 定义Keyframes，虽然内联样式不支持keyframes，但部分客户端可能会解析style标签，尝试兼容 -->
-        <style>
-          @keyframes marquee {
-            0% { transform: translateX(0); }
-            100% { transform: translateX(-50%); }
-          }
-        </style>
+      <div style="margin:0 0 20px 0;background:rgba(139,92,246,0.1);border-top:1px solid rgba(139,92,246,0.3);border-bottom:1px solid rgba(139,92,246,0.3);padding:8px 0;overflow:hidden;position:relative;white-space:nowrap">
+        <div style="display:inline-block;font-size:12px;color:#a78bfa;font-weight:500;letter-spacing:1px;animation:marquee 20s linear infinite">${scrollText} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${scrollText}</div>
+        <style>@keyframes marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}</style>
       </div>
     `;
-  } else { // 如果没有运势数据，添加一个空的间距
-    html += `<div style="margin-bottom: 20px;"></div>`;
+  } else {
+    html += `<div style="margin-bottom:20px"></div>`;
   }
 
   // 主体内容
-  html += `<div style="padding: 0 20px 30px;">`;
+  html += `<div style="padding:0 20px 30px">`;
 
   // 天气预警
   if (CONFIG.SHOW_MODULES.WEATHER && alertData.success && alertData.data.hasAlerts) {
     alertData.data.alerts.forEach(alert => {
-      const colorMap = {
-        '蓝色': '#3b82f6', '黄色': '#eab308', '橙色': '#f97316', '红色': '#ef4444'
-      };
-      const color = colorMap[alert.level] || '#ef4444';
-
-      html += `
-        <div style="
-          margin-bottom: 16px; 
-          background: rgba(239, 68, 68, 0.1); 
-          border: 1px solid ${color}; 
-          border-left: 4px solid ${color};
-          border-radius: 8px; 
-          padding: 12px;
-          display: flex;
-          align-items: flex-start;
-          gap: 12px;
-        ">
-          <div style="font-size: 20px;">⚠️</div>
-          <div>
-            <div style="color: ${color}; font-weight: bold; font-size: 14px; margin-bottom: 4px;">${alert.headline}</div>
-            <div style="color: #cbd5e1; font-size: 12px; line-height: 1.4;">${alert.description}</div>
-          </div>
-        </div>
-      `;
+      const color = {'蓝色':'#3b82f6','黄色':'#eab308','橙色':'#f97316','红色':'#ef4444'}[alert.level] || '#ef4444';
+      html += `<div style="margin-bottom:16px;background:rgba(239,68,68,0.1);border:1px solid ${color};border-left:4px solid ${color};border-radius:8px;padding:12px;display:flex;align-items:flex-start;gap:12px">
+          <div style="font-size:20px">⚠️</div>
+          <div><div style="color:${color};font-weight:bold;font-size:14px;margin-bottom:4px">${alert.headline}</div><div style="color:#cbd5e1;font-size:12px;line-height:1.4">${alert.description}</div></div>
+        </div>`;
     });
   }
 
   // 降水预报
   if (CONFIG.SHOW_MODULES.WEATHER && precipitationData.success && precipitationData.data.hasPrecipitation) {
-    html += `
-      <div style="
-        margin-bottom: 10px;
-        background: linear-gradient(90deg, rgba(6, 182, 212, 0.1), transparent);
-        border: 1px solid rgba(6, 182, 212, 0.3);
-        border-radius: 12px;
-        padding: 12px 16px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-      ">
-        <div style="display: flex; align-items: center; gap: 10px;">
-          <span style="font-size: 18px;">🌧️</span>
-          <div>
-            <div style="color: #67e8f9; font-size: 14px; font-weight: 600;">降水预警</div>
-            <div style="color: #a5f3fc; font-size: 12px;">${precipitationData.data.summary}</div>
-          </div>
-        </div>
-        <div style="text-align: right;">
-           <div style="color: #fff; font-size: 14px; font-weight: bold;">${precipitationData.data.intensity}</div>
-           <div style="color: #67e8f9; font-size: 10px;">${precipitationData.data.startTime} 开始</div>
-        </div>
-      </div>
-    `;
+    html += `<div style="margin-bottom:10px;background:linear-gradient(90deg,rgba(6,182,212,0.1),transparent);border:1px solid rgba(6,182,212,0.3);border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">🌧️</span><div><div style="color:#67e8f9;font-size:14px;font-weight:600">降水预警</div><div style="color:#a5f3fc;font-size:12px">${precipitationData.data.summary}</div></div></div>
+        <div style="text-align:right"><div style="color:#fff;font-size:14px;font-weight:bold">${precipitationData.data.intensity}</div><div style="color:#67e8f9;font-size:10px">${precipitationData.data.startTime} 开始</div></div>
+      </div>`;
   }
 
   // 轮播图
@@ -2009,84 +2027,58 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     const n = news60sData.data;
     // 生成新闻列表HTML
     const newsItemsHtml = n.news.map((item, index) => `
-      <div style="margin-bottom: 12px; display: flex;">
-        <span style="color: #64748b; margin-right: 8px; font-family: monospace;">[${String(index + 1).padStart(2, '0')}]</span>
-        <span style="color: #e2e8f0; line-height: 1.5;">${item}</span>
+      <div class="n60-it">
+        <span class="n60-idx">[${String(index + 1).padStart(2, '0')}]</span>
+        <span class="n60-txt">${item}</span>
       </div>
     `).join('');
 
     html += `
-      <div style="
-        margin: 20px 0;
-        background: #0f172a;
-        border: 1px solid rgba(16, 185, 129, 0.3);
-        border-radius: 12px;
-        overflow: hidden;
-        position: relative;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-      ">
+      <div class="n60-wrap">
         <!-- Header -->
-        <div style="
-          background: rgba(16, 185, 129, 0.1);
-          padding: 10px 15px;
-          border-bottom: 1px solid rgba(16, 185, 129, 0.2);
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-        ">
+        <div class="n60-hd">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <div style="width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981;"></div>
-            <div style="color: #10b981; font-weight: bold; font-family: monospace; letter-spacing: 1px; font-size: 13px;">60秒世界摘要</div>
+            <div class="n60-dot"></div>
+            <div class="n60-tt">60秒世界摘要</div>
           </div>
-          <div style="color: #64748b; font-size: 10px; font-family: monospace;">${n.date}</div>
+          <div class="n60-date">${n.date}</div>
         </div>
 
         <!-- Scrolling Content -->
-        <div style="
-          height: 300px;
-          overflow: hidden;
-          position: relative;
-          padding: 15px;
-        ">
+        <div class="n60-cnt">
           <!-- 扫描线效果 -->
-          <div style="
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.05) 50%, transparent);
-            background-size: 100% 4px;
-            pointer-events: none;
-            z-index: 2;
-          "></div>
+          <div class="n60-scan"></div>
 
-          <div style="
-            animation: scrollUp 45s linear infinite;
-            font-size: 13px;
-          ">
+          <div class="n60-scroll">
             ${newsItemsHtml}
             <!-- 重复一份以实现无缝滚动 -->
-            <div style="margin-top: 20px; border-top: 1px dashed rgba(16, 185, 129, 0.3); padding-top: 20px;">
+            <div class="n60-dup">
               ${newsItemsHtml}
             </div>
           </div>
         </div>
 
         <!-- Footer -->
-        <div style="
-          padding: 8px 15px;
-          border-top: 1px solid rgba(16, 185, 129, 0.2);
-          background: rgba(15, 23, 42, 0.8);
-          font-family: monospace;
-          font-size: 10px;
-          color: #10b981;
-        ">
+        <div class="n60-ft">
           > TIP: ${n.tip}
-          <span style="animation: blink 1s step-end infinite;">_</span>
+          <span class="n60-blk">_</span>
         </div>
 
         <style>
+          .n60-it { margin-bottom: 12px; display: flex; }
+          .n60-idx { color: #64748b; margin-right: 8px; font-family: monospace; }
+          .n60-txt { color: #e2e8f0; line-height: 1.5; }
+          .n60-wrap { margin: 20px 0; background: #0f172a; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; overflow: hidden; position: relative; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+          .n60-hd { background: rgba(16, 185, 129, 0.1); padding: 10px 15px; border-bottom: 1px solid rgba(16, 185, 129, 0.2); display: flex; justify-content: space-between; align-items: center; }
+          .n60-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981; }
+          .n60-tt { color: #10b981; font-weight: bold; font-family: monospace; letter-spacing: 1px; font-size: 13px; }
+          .n60-date { color: #64748b; font-size: 10px; font-family: monospace; }
+          .n60-cnt { height: 300px; overflow: hidden; position: relative; padding: 15px; }
+          .n60-scan { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.05) 50%, transparent); background-size: 100% 4px; pointer-events: none; z-index: 2; }
+          .n60-scroll { animation: scrollUp 45s linear infinite; font-size: 13px; }
+          .n60-dup { margin-top: 20px; border-top: 1px dashed rgba(16, 185, 129, 0.3); padding-top: 20px; }
+          .n60-ft { padding: 8px 15px; border-top: 1px solid rgba(16, 185, 129, 0.2); background: rgba(15, 23, 42, 0.8); font-family: monospace; font-size: 10px; color: #10b981; }
+          .n60-blk { animation: blink 1s step-end infinite; }
           @keyframes scrollUp {
             0% { transform: translateY(0); }
             100% { transform: translateY(-50%); }
@@ -2110,406 +2102,160 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     html += kfcContent.content;
   }
 
-  // 历史上的今天 - 抽屉组件 (Pure CSS)
+  // 历史上的今天
   if (CONFIG.SHOW_MODULES.HISTORY && historyData && historyData.success) {
     const h = historyData.data;
-    let historyItemsFunc = () => {
-      // 取前10条重要事件，避免内容过多
-      return h.items.slice(0, 10).map(item => `
-        <div style="margin-bottom: 15px; border-left: 2px solid #a78bfa; padding-left: 12px;">
-          <div style="color: #a78bfa; font-size: 14px; font-weight: bold; margin-bottom: 2px;">${item.year}</div>
-          <div style="color: #e2e8f0; font-size: 13px; font-weight: 500; margin-bottom: 4px;">${item.title}</div>
-          <div style="color: #94a3b8; font-size: 12px; line-height: 1.4;">${item.description.substring(0, 60)}...</div>
-        </div>
-      `).join('');
-    };
-
-    html += `
-      <!-- Pure CSS Drawer Toggle -->
-      <input type="checkbox" id="history-drawer-toggle" style="display: none;">
-      <!-- Overlay -->
-      <label for="history-drawer-toggle" class="drawer-overlay" style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.5); z-index: 1001;
-        display: none; backdrop-filter: blur(2px);
-      "></label>
-      <!-- Drawer Content -->
-      <div class="drawer-content history-drawer" style="
-        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
-        background: #0f172a; z-index: 1002;
-        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
-        padding: 20px; box-sizing: border-box;
-        border-left: 1px solid rgba(255,255,255,0.1);
-        overflow-y: auto;
-        transition: right 0.3s ease-in-out;
-      ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-          <div style="color: #fff; font-size: 18px; font-weight: bold;">📜 历史上的今天</div>
-          <label for="history-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
-        </div>
-        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 15px;">${h.date} (${h.items.length} 个事件)</div>
-        <div>
-          ${historyItemsFunc()}
-        </div>
-        <div style="text-align: center; margin-top: 20px; font-size: 10px; color: #475569;">
-          数据来源: 百度百科
-        </div>
-      </div>
-      <style>
-        #history-drawer-toggle:checked ~ .drawer-overlay { display: block; }
-        #history-drawer-toggle:checked ~ .history-drawer { right: 0 !important; }
-      </style>
+    const content = `
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:15px">${h.date} (${h.items.length} 个事件)</div>
+      ${h.items.slice(0,10).map(i => `<div class="hi"><div class="hy">${i.year}</div><div class="ht">${i.title}${i.link?`<a href="${i.link}" class="hl">🔗</a>`:''}</div><div class="hd">${i.description.substring(0,60)}...</div></div>`).join('')}
+      <div style="text-align:center;margin-top:20px;font-size:10px;color:#475569">数据来源: 百度百科</div>
+      <style>.hi{margin-bottom:15px;border-left:2px solid #a78bfa;padding-left:12px}.hy{color:#a78bfa;font-size:14px;font-weight:bold;margin-bottom:2px}.ht{color:#e2e8f0;font-size:13px;font-weight:500;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}.hd{color:#94a3b8;font-size:12px;line-height:1.4}.hl{color:#a78bfa;text-decoration:none;font-size:12px;margin-left:8px;opacity:0.7}</style>
     `;
+    html += genDrawer('history-drawer-toggle', '📜', '历史上的今天', content);
   }
 
-  // 今日汇率 - 抽屉组件 (Pure CSS)
+  // 今日汇率
   if (CONFIG.SHOW_MODULES.EXCHANGE && rateData && rateData.success) {
     const r = rateData.data;
-    let rateItemsHtml = r.rates.map(item => `
-        <div style="
-          display: flex; 
-          justify-content: space-between; 
-          align-items: center; 
-          margin-bottom: 12px; 
-          background: rgba(255,255,255,0.05); 
-          padding: 12px; 
-          border-radius: 8px;
-          border: 1px solid rgba(255,255,255,0.05);
-        ">
-          <div style="display: flex; align-items: center;">
-            <div style="
-              width: 32px; 
-              height: 32px; 
-              background: #334155; 
-              color: #fff; 
-              border-radius: 50%; 
-              display: flex; 
-              align-items: center; 
-              justify-content: center; 
-              font-size: 10px; 
-              margin-right: 12px;
-              font-weight: bold;
-            ">${item.code}</div>
-            <div>
-              <div style="color: #e2e8f0; font-size: 14px; font-weight: 500;">${item.name}</div>
-              <div style="color: #64748b; font-size: 10px;">1 ${item.code} =</div>
-            </div>
-          </div>
-          <div style="text-align: right;">
-            <div style="color: #00f3ff; font-size: 18px; font-weight: bold; font-family: monospace;">
-              ${item.rate} <span style="font-size: 10px; color: #64748b;">CNY</span>
-            </div>
-            <div style="font-size: 10px; color: ${item.diffColor || '#94a3b8'};">较昨 ${item.diffStr || '-'}</div>
-          </div>
-        </div>
-    `).join('');
-
-    html += `
-      <!-- Rate Drawer Toggle -->
-      <input type="checkbox" id="rate-drawer-toggle" style="display: none;">
-      <label for="rate-drawer-toggle" class="drawer-overlay" style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.5); z-index: 1001;
-        display: none; backdrop-filter: blur(2px);
-      "></label>
-      <div class="drawer-content rate-drawer" style="
-        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
-        background: #0f172a; z-index: 1002;
-        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
-        padding: 20px; box-sizing: border-box;
-        border-left: 1px solid rgba(255,255,255,0.1);
-        overflow-y: auto;
-        transition: right 0.3s ease-in-out;
-      ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-          <div style="color: #fff; font-size: 18px; font-weight: bold;">💰 今日汇率</div>
-          <label for="rate-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
-        </div>
-        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 20px;">更新时间: ${r.updated}</div>
-        
-        <div>
-          ${rateItemsHtml}
-        </div>
-        
-        <div style="margin-top: 20px; padding: 10px; background: rgba(245, 158, 11, 0.1); border-radius: 8px; border: 1px solid rgba(245, 158, 11, 0.2);">
-          <div style="color: #f59e0b; font-size: 12px; line-height: 1.4;">
-            💡 提示: 数据仅供参考，交易时请以银行柜台成交价为准。
-          </div>
-        </div>
-      </div>
-      <style>
-        #rate-drawer-toggle:checked ~ .drawer-overlay { display: block; }
-        #rate-drawer-toggle:checked ~ .rate-drawer { right: 0 !important; }
-      </style>
+    const content = `
+      <div style="margin-bottom:20px;font-size:12px;color:#94a3b8"><div style="display:flex;justify-content:space-between;margin-bottom:4px"><span>基准货币: <span style="color:#e2e8f0;font-weight:bold">${r.base_code||'CNY'}</span></span><span>更新时间: ${r.updated}</span></div>${r.next_updated?`<div style="text-align:right;font-size:10px;opacity:0.8">下次更新: ${r.next_updated}</div>`:''}</div>
+      ${r.rates.map(i => `<div class="ri"><div class="rl"><div class="rn">${i.code}</div><div><div class="rm">${i.name}</div><div class="rc">1 ${i.code} =</div></div></div><div class="rr"><div class="rv">${i.rate} <span class="ru">CNY</span></div><div class="rp" style="color:${i.diffColor||'#94a3b8'}">${r.diffLabel||'涨跌'} ${i.diffStr||'-'}</div></div></div>`).join('')}
+      <div style="margin-top:20px;padding:10px;background:rgba(245,158,11,0.1);border-radius:8px;border:1px solid rgba(245,158,11,0.2)"><div style="color:#f59e0b;font-size:12px;line-height:1.4">💡 提示: 数据仅供参考，交易时请以银行柜台成交价为准。</div></div>
+      <style>.ri{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;background:rgba(255,255,255,0.05);padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.05)}.rl{display:flex;align-items:center}.rn{width:32px;height:32px;background:#334155;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;margin-right:12px;font-weight:bold}.rm{color:#e2e8f0;font-size:14px;font-weight:500}.rc{color:#64748b;font-size:10px}.rr{text-align:right}.rv{color:#00f3ff;font-size:18px;font-weight:bold;font-family:monospace}.ru{font-size:10px;color:#64748b}.rp{font-size:10px}</style>
     `;
+    html += genDrawer('rate-drawer-toggle', '💰', '今日汇率', content);
   }
 
-  // AI资讯 - 抽屉组件 (Pure CSS)
+  // AI资讯
   if (CONFIG.SHOW_MODULES.AI_NEWS && aiNewsData && aiNewsData.success) {
     const ai = aiNewsData.data;
-    let aiItemsHtml = ai.news.map(item => `
-        <div style="
-          margin-bottom: 20px; 
-          background: rgba(59, 130, 246, 0.05); 
-          padding: 15px; 
-          border-radius: 12px;
-          border: 1px solid rgba(59, 130, 246, 0.1);
-        ">
-          <div style="color: #60a5fa; font-size: 15px; font-weight: bold; margin-bottom: 8px; line-height: 1.4;">${item.title}</div>
-          <div style="color: #cbd5e1; font-size: 13px; line-height: 1.6; margin-bottom: 10px;">${item.detail || '暂无详细描述'}</div>
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <div style="color: #64748b; font-size: 11px;">${item.source}</div>
-            ${item.link ? `<a href="${item.link}" style="color: #3b82f6; font-size: 11px; text-decoration: none; padding: 2px 8px; border: 1px solid #3b82f6; border-radius: 4px;">查看原文</a>` : ''}
-          </div>
-        </div>
-    `).join('');
-
-    html += `
-      <!-- AI Drawer Toggle -->
-      <input type="checkbox" id="ai-drawer-toggle" style="display: none;">
-      <label for="ai-drawer-toggle" class="drawer-overlay" style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.5); z-index: 1001;
-        display: none; backdrop-filter: blur(2px);
-      "></label>
-      <div class="drawer-content ai-drawer" style="
-        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
-        background: #0f172a; z-index: 1002;
-        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
-        padding: 20px; box-sizing: border-box;
-        border-left: 1px solid rgba(255,255,255,0.1);
-        overflow-y: auto;
-        transition: right 0.3s ease-in-out;
-      ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-          <div style="color: #fff; font-size: 18px; font-weight: bold;">🤖 AI 资讯快报</div>
-          <label for="ai-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
-        </div>
-         <div style="color: #94a3b8; font-size: 12px; margin-bottom: 20px;">更新日期: ${ai.date}</div>
-        
-        <div>
-          ${aiItemsHtml}
-        </div>
-      </div>
-      <style>
-        #ai-drawer-toggle:checked ~ .drawer-overlay { display: block; }
-        #ai-drawer-toggle:checked ~ .ai-drawer { right: 0 !important; }
-      </style>
+    const content = `
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:20px">更新日期: ${ai.date}</div>
+      ${ai.news.map(i => `<div class="ni"><div class="nt">${i.title}</div><div class="nd">${i.detail||'暂无详细描述'}</div><div class="nf"><div class="ns">${i.source}</div>${i.link?`<a href="${i.link}" class="nl">查看原文</a>`:''}</div></div>`).join('')}
+      <style>.ni{margin-bottom:20px;background:rgba(59,130,246,0.05);padding:15px;border-radius:12px;border:1px solid rgba(59,130,246,0.1)}.nt{color:#60a5fa;font-size:15px;font-weight:bold;margin-bottom:8px;line-height:1.4}.nd{color:#cbd5e1;font-size:13px;line-height:1.6;margin-bottom:10px}.nf{display:flex;justify-content:space-between;align-items:center}.ns{color:#64748b;font-size:11px}.nl{color:#3b82f6;font-size:11px;text-decoration:none;padding:2px 8px;border:1px solid #3b82f6;border-radius:4px}</style>
     `;
+    html += genDrawer('ai-drawer-toggle', '🤖', 'AI 资讯快报', content);
   }
 
-  // 黄金价格 - 抽屉组件 (Pure CSS)
+  // 黄金/白银 - 抽屉组件 (Tab切换 + Grid布局)
   if (CONFIG.SHOW_MODULES.GOLD && goldData && goldData.success) {
     const g = goldData.data;
-    // 基础金价
-    let metalItemsHtml = g.metals.map(item => `
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px;">
-        <span style="color: #cbd5e1;">${item.name}</span>
-        <div style="text-align: right;">
-          <div style="color: #f59e0b; font-weight: bold;">${item.today_price} ${item.unit}</div>
-          <div style="font-size: 10px; color: ${item.diffColor || '#94a3b8'};">较昨 ${item.diffStr || '-'}</div>
-        </div>
-      </div>
-    `).join('');
+    // Compact Helpers
+    const R = (n, p, d='') => `<div class="gi"><div class="gh"><span class="gn">${n}</span><div class="gp">${p}</div></div>${d}</div>`;
+    const P = (v, u='克', s='¥') => `<span class="gu">${s}</span>${v}<span class="gu">${u?`/${u.replace('元/','')}`:''}</span>`;
+    const D = (l, k='') => `<div class="gd ${k}">${l.map(([n,v,c,z])=>`<div><span class="gl">${n}</span><span${c?` style="color:${c}"`:''}${z?` class="${z}"`:''}>${v}</span></div>`).join('')}</div>`;
+    
+    // Gold Content
+    let gh = `<div class="mt-st">基础金价</div>` + g.metals.map(i => R(i.name, P(i.today_price, i.unit), D([
+        ['最高', i.high_price, '', 'cr'], ['最低', i.low_price, '', 'cgr'], ['售卖', i.sell_price||'-', '', 'cy'],
+        [g.diffLabel||'涨跌', i.diffStr||'-', i.diffColor||'#94a3b8']
+    ], 'gd-2'))).join('');
 
-    // 品牌金价 (取前3个)
-    let storeItemsHtml = g.stores.slice(0, 3).map(item => `
-      <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; margin-bottom: 8px;">
-        <div style="font-weight: bold; color: #e2e8f0; font-size: 13px; margin-bottom: 4px;">${item.brand} - ${item.product}</div>
-        <div style="color: #f59e0b; font-family: monospace;">${item.price} ${item.unit}</div>
-      </div>
-    `).join('');
+    gh += `<div class="mt-st">品牌金价</div>` + g.stores.slice(0,3).map(i => R(i.brand, P(i.price))).join('');
+    if (g.banks?.length) gh += `<div class="mt-st">银行金价</div>` + g.banks.slice(0,3).map(i => R(i.bank, P(i.price))).join('');
+    if (g.recycle?.length) gh += `<div class="mt-st">回收金价</div>` + g.recycle.map(i => R(i.type, P(i.price))).join('');
+
+    // Silver Content
+    let sh = '';
+    const S = (l, t) => {
+        if(!l?.length) return '';
+        return `<div class="mt-st">${t}</div>` + l.map(i => {
+            const up = !(i.changepercent||'').includes('-');
+            const sym = t.includes('伦敦') ? '$' : '¥';
+            return R(i.typename||i.type, P(i.price, t.includes('上海黄金')?i.unit:'', sym), D([
+                ['今开', i.openingprice||'-'], ['昨收', i.lastclosingprice||'-'],
+                ['最高', i.maxprice||'-', '', 'cr'], ['涨跌', i.changepercent, up?'#f87171':'#4ade80']
+            ], 'gd-2'));
+        }).join('');
+    };
+    
+    if (silverData && silverData.success) {
+        sh += S(silverData.data.shanghai, '上海黄金交易所');
+        sh += S(silverData.data.future, '上海期货交易所');
+        sh += S(silverData.data.london, '伦敦金银市场');
+    }
 
     html += `
-      <!-- Gold Drawer Toggle -->
       <input type="checkbox" id="gold-drawer-toggle" style="display: none;">
-      <label for="gold-drawer-toggle" class="drawer-overlay" style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.5); z-index: 1001;
-        display: none; backdrop-filter: blur(2px);
-      "></label>
-      <div class="drawer-content gold-drawer" style="
-        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
-        background: #0f172a; z-index: 1002;
-        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
-        padding: 20px; box-sizing: border-box;
-        border-left: 1px solid rgba(255,255,255,0.1);
-        overflow-y: auto;
-        transition: right 0.3s ease-in-out;
-      ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-          <div style="color: #fff; font-size: 18px; font-weight: bold;">🏆 今日金价</div>
-          <label for="gold-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
-        </div>
-        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 15px;">${g.date}</div>
+      <label for="gold-drawer-toggle" class="do"></label>
+      <div class="dc gold-drawer">
+        <div class="dh"><div class="dt">🏆 贵金属</div><label for="gold-drawer-toggle" class="dx">✕</label></div>
         
-        <div style="margin-bottom: 20px;">
-          <div style="color: #a78bfa; font-size: 14px; margin-bottom: 10px; font-weight: bold;">基础金价</div>
-          ${metalItemsHtml}
+        <input type="radio" name="mt-tabs" id="mt-gold" class="mt-inp" checked hidden>
+        <input type="radio" name="mt-tabs" id="mt-silver" class="mt-inp" hidden>
+        
+        <div class="mt-tabs">
+            <label for="mt-gold" class="mt-lbl">黄金</label>
+            <label for="mt-silver" class="mt-lbl">白银</label>
         </div>
-
-        <div>
-          <div style="color: #a78bfa; font-size: 14px; margin-bottom: 10px; font-weight: bold;">品牌金价</div>
-          ${storeItemsHtml}
+        <div class="mt-cnt mt-c-gold">
+            <div style="color:#94a3b8;font-size:12px;margin-bottom:10px">更新时间: ${g.date}</div>${gh}
         </div>
+        <div class="mt-cnt mt-c-silver">${sh || '<div style="text-align:center;color:#64748b;padding:20px;">暂无白银数据</div>'}</div>
       </div>
       <style>
-        #gold-drawer-toggle:checked ~ .drawer-overlay { display: block; }
-        #gold-drawer-toggle:checked ~ .gold-drawer { right: 0 !important; }
+        #gold-drawer-toggle:checked~.do{display:block}#gold-drawer-toggle:checked~.gold-drawer{right:0!important}
+        .mt-tabs{display:flex;gap:10px;margin-bottom:15px}
+        
+        #mt-gold:checked~.mt-tabs label[for="mt-gold"],
+        #mt-silver:checked~.mt-tabs label[for="mt-silver"]{background:rgba(251,191,36,0.2);color:#fbbf24;border-color:rgba(251,191,36,0.5)}
+        
+        .mt-lbl{flex:1;text-align:center;padding:8px;background:rgba(255,255,255,0.05);border-radius:8px;color:#94a3b8;font-size:13px;border:1px solid transparent;transition:all 0.2s}
+        .mt-cnt{display:none;animation:fadeIn 0.3s ease}
+        #mt-gold:checked~.mt-c-gold,#mt-silver:checked~.mt-c-silver{display:block}
+        
+        .mt-st{color:#a78bfa;font-size:13px;margin:15px 0 8px;font-weight:bold;border-left:3px solid #a78bfa;padding-left:8px;line-height:1}
+        .mt-st:first-child{margin-top:0}
+        .gd.gd-2{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}.gd.gd-2>div{display:flex;justify-content:space-between}
       </style>
     `;
   }
 
+  // 汽油价格
   if (CONFIG.SHOW_MODULES.FUEL && fuelData && fuelData.success) {
     const f = fuelData.data;
-    let fuelItemsHtml = f.items.map(item => `
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-        <div style="display: flex; flex-direction: column;">
-          <div style="color: #e2e8f0; font-size: 13px; font-weight: 500;">${item.name}</div>
-          <div style="color: #64748b; font-size: 10px;">${item.price_desc || ''}</div>
-        </div>
-        <div style="text-align: right;">
-          <div style="color: #38bdf8; font-weight: bold; font-family: monospace;">${item.price}</div>
-          <div style="font-size: 10px; color: ${item.diffColor || '#94a3b8'};">较昨 ${item.diffStr || '-'}</div>
-        </div>
+    const content = `
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:6px">地区: ${f.province} | 更新: ${f.updated}</div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:15px;background:rgba(255,255,255,0.05);padding:8px;border-radius:6px">
+          <div style="text-align:center;width:48%"><div style="font-size:10px;color:#94a3b8">上次调价</div><div style="font-size:12px;color:#cbd5e1">${f.before_change||'-'}</div></div>
+          <div style="width:1px;background:rgba(255,255,255,0.1)"></div>
+          <div style="text-align:center;width:48%"><div style="font-size:10px;color:#94a3b8">下次调价</div><div style="font-size:12px;color:#fcd34d">${f.next_change||'-'}</div></div>
       </div>
-    `).join('');
-
-    html += `
-      <input type="checkbox" id="fuel-drawer-toggle" style="display: none;">
-      <label for="fuel-drawer-toggle" class="drawer-overlay" style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.5); z-index: 1001;
-        display: none; backdrop-filter: blur(2px);
-      "></label>
-      <div class="drawer-content fuel-drawer" style="
-        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
-        background: #0f172a; z-index: 1002;
-        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
-        padding: 20px; box-sizing: border-box;
-        border-left: 1px solid rgba(255,255,255,0.1);
-        overflow-y: auto;
-        transition: right 0.3s ease-in-out;
-      ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-          <div style="color: #fff; font-size: 18px; font-weight: bold;">⛽ 汽油价格</div>
-          <label for="fuel-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
-        </div>
-        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 6px;">地区: ${f.region}</div>
-        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 15px;">更新时间: ${f.updated}</div>
-
-        <div>
-          ${fuelItemsHtml}
-        </div>
-
-        ${f.link ? `<div style="margin-top: 14px; display: flex; justify-content: flex-end;">
-           <a href="${f.link}" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 999px; color: #7dd3fc; font-size: 11px; text-decoration: none; letter-spacing: 0.3px;">
-             <span style="font-size: 12px;">🔗</span> 数据来源
-           </a>
-         </div>` : ''}
-      </div>
-      <style>
-        #fuel-drawer-toggle:checked ~ .drawer-overlay { display: block; }
-        #fuel-drawer-toggle:checked ~ .fuel-drawer { right: 0 !important; }
-      </style>
+      ${f.items.map(i => `<div class="fi"><div class="fl"><div class="fn">${i.name}</div><div class="fd">${i.beforePrice?`<span style="opacity:0.6;font-size:9px">前:${i.beforePrice}</span>`:''}</div></div><div class="fr"><div class="fp">${i.price}</div><div class="ff" style="color:${i.diffColor||'#94a3b8'}">${i.diffStr||'-'}${i.changePercent?`<span style="opacity:0.8;margin-left:2px;font-size:9px">${i.changePercent}</span>`:''}</div></div></div>`).join('')}
+      ${f.link?`<div style="margin-top:14px;display:flex;justify-content:flex-end"><a href="${f.link}" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.4);border-radius:999px;color:#7dd3fc;font-size:11px;text-decoration:none;letter-spacing:0.3px"><span style="font-size:12px">🔗</span> 数据来源</a></div>`:''}
+      <style>.fi{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.05)}.fl{display:flex;flex-direction:column}.fn{color:#e2e8f0;font-size:13px;font-weight:500}.fd{color:#64748b;font-size:10px}.fr{text-align:right}.fp{color:#38bdf8;font-weight:bold;font-family:monospace}.ff{font-size:10px}</style>
     `;
+    html += genDrawer('fuel-drawer-toggle', '⛽', '汽油价格', content);
   }
 
+  // 摸鱼日报
   if (CONFIG.SHOW_MODULES.MOYU && moyuData && moyuData.success) {
     const m = moyuData.data;
-    const lunar = m.date && m.date.lunar ? m.date.lunar : {};
-    const week = m.progress && m.progress.week ? m.progress.week : {};
-    const month = m.progress && m.progress.month ? m.progress.month : {};
-    const year = m.progress && m.progress.year ? m.progress.year : {};
+    const l = m.date?.lunar || {};
     const nh = m.nextHoliday || {};
     const nw = m.nextWeekend || {};
     const cd = m.countdown || {};
+    const p = m.progress || {};
+    
+    // Compact Helpers
+    const PB = (t, v) => `<div class="pb"><div class="pt">${t}</div><div class="pv">${v}%</div></div>`;
+    const CB = (t, v, c='10b981') => `<div class="pb"><div class="pt">${t}</div><div class="pv" style="color:#${c}">${v}</div></div>`;
 
-    const progressHtml = `
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 12px;">
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">本周进度</div>
-          <div style="color: #06b6d4; font-weight: bold; font-family: monospace;">${week.percentage || 0}%</div>
-        </div>
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">本月进度</div>
-          <div style="color: #06b6d4; font-weight: bold; font-family: monospace;">${month.percentage || 0}%</div>
-        </div>
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">本年进度</div>
-          <div style="color: #06b6d4; font-weight: bold; font-family: monospace;">${year.percentage || 0}%</div>
-        </div>
+    const content = `
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:8px">${m.date?.gregorian||''} · ${m.date?.weekday||''}</div>
+      <div style="color:#64748b;font-size:11px;margin-bottom:12px">农历: ${l.yearCN||''}${l.monthCN||''}${l.dayCN||''} · ${l.zodiac||''}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">${PB('本周',p.week?.percentage||0)}${PB('本月',p.month?.percentage||0)}${PB('本年',p.year?.percentage||0)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${CB('距离周末',cd.toWeekEnd||0)}${CB('距离周五',cd.toFriday||0)}${CB('距离月末',cd.toMonthEnd||0,'f59e0b')}${CB('距离年末',cd.toYearEnd||0,'f59e0b')}</div>
+      <div style="margin-top:12px;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px">
+        <div style="color:#a78bfa;font-size:12px;font-weight:bold;margin-bottom:6px">下一个节日</div><div style="color:#e2e8f0;font-size:12px">${nh.name||'暂无'} · ${nh.date||''}</div><div style="color:#94a3b8;font-size:10px">倒计时: ${nh.until||0} 天</div>
       </div>
+      <div style="margin-top:8px;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px">
+        <div style="color:#a78bfa;font-size:12px;font-weight:bold;margin-bottom:6px">下一个周末</div><div style="color:#e2e8f0;font-size:12px">${nw.date||''} · ${nw.weekday||''}</div><div style="color:#94a3b8;font-size:10px">还剩: ${nw.daysUntil||0} 天</div>
+      </div>
+      ${m.moyuQuote?`<div style="margin-top:12px;background:rgba(255,255,255,0.05);padding:12px;border-radius:8px;color:#e2e8f0;font-size:13px;line-height:1.6">${m.moyuQuote}</div>`:''}
+      <style>.pb{background:rgba(255,255,255,0.05);padding:10px;border-radius:8px}.pt{color:#94a3b8;font-size:11px}.pv{color:#06b6d4;font-weight:bold;font-family:monospace}</style>
     `;
-
-    const countdownHtml = `
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">距离周末</div>
-          <div style="color: #10b981; font-weight: bold; font-family: monospace;">${cd.toWeekEnd || 0}</div>
-        </div>
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">距离周五</div>
-          <div style="color: #10b981; font-weight: bold; font-family: monospace;">${cd.toFriday || 0}</div>
-        </div>
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">距离月末</div>
-          <div style="color: #f59e0b; font-weight: bold; font-family: monospace;">${cd.toMonthEnd || 0}</div>
-        </div>
-        <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-          <div style="color: #94a3b8; font-size: 11px;">距离年末</div>
-          <div style="color: #f59e0b; font-weight: bold; font-family: monospace;">${cd.toYearEnd || 0}</div>
-        </div>
-      </div>
-    `;
-
-    const holidayHtml = `
-      <div style="margin-top: 12px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-        <div style="color: #a78bfa; font-size: 12px; font-weight: bold; margin-bottom: 6px;">下一个节日</div>
-        <div style="color: #e2e8f0; font-size: 12px;">${nh.name || '暂无'} · ${nh.date || ''}</div>
-        <div style="color: #94a3b8; font-size: 10px;">倒计时: ${nh.until || 0} 天</div>
-      </div>
-      <div style="margin-top: 8px; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 8px;">
-        <div style="color: #a78bfa; font-size: 12px; font-weight: bold; margin-bottom: 6px;">下一个周末</div>
-        <div style="color: #e2e8f0; font-size: 12px;">${nw.date || ''} · ${nw.weekday || ''}</div>
-        <div style="color: #94a3b8; font-size: 10px;">还剩: ${nw.daysUntil || 0} 天</div>
-      </div>
-    `;
-
-    html += `
-      <input type="checkbox" id="moyu-drawer-toggle" style="display: none;">
-      <label for="moyu-drawer-toggle" class="drawer-overlay" style="
-        position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(0,0,0,0.5); z-index: 1001;
-        display: none; backdrop-filter: blur(2px);
-      "></label>
-      <div class="drawer-content moyu-drawer" style="
-        position: fixed; top: 0; right: -85%; width: 85%; height: 100%;
-        background: #0f172a; z-index: 1002;
-        box-shadow: -5px 0 15px rgba(0,0,0,0.5);
-        padding: 20px; box-sizing: border-box;
-        border-left: 1px solid rgba(255,255,255,0.1);
-        overflow-y: auto;
-        transition: right 0.3s ease-in-out;
-      ">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;">
-          <div style="color: #fff; font-size: 18px; font-weight: bold;">🐟 摸鱼日报</div>
-          <label for="moyu-drawer-toggle" style="color: #64748b; font-size: 20px; cursor: pointer;">✕</label>
-        </div>
-        <div style="color: #94a3b8; font-size: 12px; margin-bottom: 8px;">${m.date?.gregorian || ''} · ${m.date?.weekday || ''}</div>
-        <div style="color: #64748b; font-size: 11px; margin-bottom: 12px;">农历: ${lunar.yearCN || ''}${lunar.monthCN || ''}${lunar.dayCN || ''} · ${lunar.zodiac || ''}</div>
-
-        ${progressHtml}
-        ${countdownHtml}
-        ${holidayHtml}
-
-        ${m.moyuQuote ? `<div style="margin-top: 12px; background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; color: #e2e8f0; font-size: 13px; line-height: 1.6;">${m.moyuQuote}</div>` : ''}
-      </div>
-      <style>
-        #moyu-drawer-toggle:checked ~ .drawer-overlay { display: block; }
-        #moyu-drawer-toggle:checked ~ .moyu-drawer { right: 0 !important; }
-      </style>
-    `;
+    html += genDrawer('moyu-drawer-toggle', '🐟', '摸鱼日报', content);
   }
 
   // 菜单项配置
@@ -2617,30 +2363,133 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     `;
   }
 
-
-  // Footer HTML
-  html += `
-    <div style="text-align: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.05);">
-      <div style="display: inline-block; padding: 4px 12px; background: rgba(255,255,255,0.05); border-radius: 20px; font-size: 10px; color: #64748b; letter-spacing: 1px;">
-        系统在线 / ${timeInfo.time}
-      </div>
-      <div style="margin-top: 8px; font-size: 10px; color: #334155;">
-        ANTIGRAVITY 驱动
-      </div>
+  // 二维码分享
+  if (CONFIG.SHOW_MODULES.QR_CODE) {
+    html += `
+    <div class="qrc">
+      <a href="https://wxpusher.zjiecode.com/api/qrcode/O5f8VIZJDQ5gHTIx9KDzP8rWtNDSEB8cvBltIzHoAZdNuEOjDuNKbD7pKiEmQItv.jpg" class="qrl">
+        <div class="qri"></div>
+      </a>
+      <div class="qrt">点击二维码·订阅推送</div>
     </div>
+    `;
+  }
+  html += `
+    <style>
+    .f{display:flex}.fa{align-items:center}.fj{justify-content:space-between}.fc{flex-direction:column}
+    .rel{position:relative}.abs{position:absolute}
+    .br8{border-radius:8px}.br12{border-radius:12px}
+    .mb6{margin-bottom:6px}.mb10{margin-bottom:10px}.mb12{margin-bottom:12px}.mb20{margin-bottom:20px}
+    .p10{padding:10px}.p12{padding:12px}.p20{padding:20px}
+    .cw{color:#fff}.cg{color:#94a3b8}.cy{color:#fcd34d}.cr{color:#f87171}.cgr{color:#4ade80}
+    .fs10{font-size:10px}.fs11{font-size:11px}.fs12{font-size:12px}.fs14{font-size:14px}.fs16{font-size:16px}.fs18{font-size:18px}
+    .fwb{font-weight:bold}.mono{font-family:monospace}
+    .do{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:1001;display:none;backdrop-filter:blur(2px)}
+    .dc{position:fixed;top:0;right:-85%;width:85%;height:100%;background:#0f172a;z-index:1002;box-shadow:-5px 0 15px rgba(0,0,0,0.5);padding:20px;box-sizing:border-box;border-left:1px solid rgba(255,255,255,0.1);overflow-y:auto;transition:right 0.3s ease-in-out}
+    .dh{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:10px}
+    .dx{color:#64748b;font-size:20px;cursor:pointer}
+    .dt{color:#fff;font-size:18px;font-weight:bold}
+    .gi{margin-bottom:12px;background:rgba(245,158,11,0.05);padding:10px;border-radius:8px;border:1px solid rgba(245,158,11,0.1)}
+    .gh{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+    .gn{color:#fcd34d;font-weight:bold;font-size:14px}
+    .gp{color:#fff;font-weight:bold;font-family:monospace;font-size:16px}
+    .gd{display:flex;justify-content:space-between;font-size:11px;color:#94a3b8;font-family:monospace;white-space:nowrap}
+    .gu{font-size:10px;opacity:0.7;font-weight:normal;margin:0 1px}
+    .gl{margin-right:2px}
+    .fi{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.05)}
+    .fl{display:flex;flex-direction:column}
+    .fn{color:#e2e8f0;font-size:13px;font-weight:500}
+    .fd{color:#64748b;font-size:10px}
+    .fr{text-align:right}
+    .fp{color:#38bdf8;font-weight:bold;font-family:monospace}
+    .ff{font-size:10px}
+    .qrc{margin:30px 0 20px;text-align:center;position:relative;z-index:10}
+    .qrl{text-decoration:none;display:inline-block}
+    .qri{width:100px;height:100px;border-radius:50%;background:url('https://wxpusher.zjiecode.com/api/qrcode/O5f8VIZJDQ5gHTIx9KDzP8rWtNDSEB8cvBltIzHoAZdNuEOjDuNKbD7pKiEmQItv.jpg') no-repeat center center;background-size:cover;box-shadow:0 0 15px rgba(59,130,246,0.8);animation:qb 2s infinite ease-in-out;border:2px solid rgba(255,255,255,0.8)}
+    .qrt{margin-top:10px;font-size:10px;color:rgba(255,255,255,0.5)}
+    @keyframes qb{0%,100%{transform:scale(1);box-shadow:0 0 15px rgba(59,130,246,0.8)}50%{transform:scale(1.05);box-shadow:0 0 25px rgba(59,130,246,1)}}
+    .wc{flex:0 0 100%;scroll-snap-align:center;background:rgba(16,24,40,0.6);border-radius:16px;border:1px solid rgba(0,243,255,0.15);padding:12px;box-sizing:border-box;backdrop-filter:blur(12px);box-shadow:0 8px 32px rgba(0,0,0,0.2);position:relative;overflow:hidden;display:flex;flex-direction:column}
+    .wgi{background:rgba(255,255,255,0.05);border-radius:8px;padding:8px;display:flex;align-items:center;gap:8px;overflow:hidden}
+    .wai{display:flex;align-items:center;font-size:11px;color:#e2e8f0}
+    .wfi{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:rgba(255,255,255,0.02);border-radius:8px;margin-bottom:8px;border-left:3px solid rgba(255,255,255,0.1)}
+    .wdg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:25px}
+    .wdi{background:rgba(255,255,255,0.03);padding:6px;border-radius:8px;text-align:center}
+    .wng{position:absolute;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(circle at 50% 50%,rgba(0,243,255,0.03) 0%,transparent 50%);pointer-events:none;z-index:0}
+    </style>
   `;
-
-
 
   html += `</div></div>`;
 
   return html;
 }
 
+// 获取运行模式
+function getRunMode() {
+  // 获取北京时间的小时
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const hour = now.getHours();
+
+  if (hour < 10) {
+    return 'morning'; // 早安推送 (7:30)
+  } else if (hour >= 10 && hour < 14) {
+    return 'midday'; // 午间推送 (11:30)
+  } else {
+    return 'evening'; // 晚间推送 (17:00)
+  }
+}
+
 // 主函数
 async function main() {
   console.log('========== 开始执行每日消息推送 ==========');
+  const runMode = getRunMode();
   console.log(`触发方式: ${isScheduled ? '定时任务' : '手动触发'} `);
+  console.log(`运行模式: ${runMode}`);
+
+  // 根据模式调整模块开关 (仅对定时任务生效)
+  if (isScheduled) {
+    // 先重置所有模块为false (除了始终开启的)
+    const alwaysOn = ['LUCK', 'BING_WALLPAPER', 'yiYan', 'KFC'];
+    for (const key in CONFIG.SHOW_MODULES) {
+      if (!alwaysOn.includes(key)) {
+        if (typeof CONFIG.SHOW_MODULES[key] === 'object') {
+           // HOT_LIST object
+           for (const subKey in CONFIG.SHOW_MODULES[key]) {
+             CONFIG.SHOW_MODULES[key][subKey] = false;
+           }
+        } else {
+           CONFIG.SHOW_MODULES[key] = false;
+        }
+      }
+    }
+
+    // 根据模式开启特定模块
+    if (runMode === 'morning') {
+      console.log('🌅 执行早安推送模式: 天气 + 基础 + 60s新闻');
+      CONFIG.SHOW_MODULES.WEATHER = true;
+      CONFIG.SHOW_MODULES.NEWS_60S = true;
+      CONFIG.SHOW_MODULES.QR_CODE = true;
+    } else if (runMode === 'midday') {
+      console.log('☀️ 执行午间推送模式: 抽屉内容');
+      // 开启右侧按钮内容
+      CONFIG.SHOW_MODULES.HISTORY = true;
+      CONFIG.SHOW_MODULES.EXCHANGE = true;
+      CONFIG.SHOW_MODULES.GOLD = true;
+      CONFIG.SHOW_MODULES.FUEL = true;
+      CONFIG.SHOW_MODULES.AI_NEWS = true;
+      CONFIG.SHOW_MODULES.KFC = false;
+    } else if (runMode === 'evening') {
+      console.log('🌇 执行晚间推送模式: 热点榜单');
+      // 开启热点榜单
+      // 注意：CONFIG.SHOW_MODULES.HOT_LIST 是对象，不能直接设为true
+      // 我们需要开启其中的子项。这里假设全部开启，或者根据 config.js 原本的意图? 
+      // 用户说 "延时任务的下午5点发送的是HOT_LIST"
+      // 我们遍历 HOT_LIST 并开启所有支持的榜单
+      for (const subKey in CONFIG.SHOW_MODULES.HOT_LIST) {
+         CONFIG.SHOW_MODULES.HOT_LIST[subKey] = true;
+      }
+      CONFIG.SHOW_MODULES.QR_CODE = true;
+    }
+  }
 
   try {
     // 1. 获取时间信息
@@ -2662,6 +2511,7 @@ async function main() {
       historyResult,
       rateResult,
       goldResult,
+      silverResult,
       fuelResult,
       moyuResult,
       aiNewsResult,
@@ -2692,6 +2542,7 @@ async function main() {
       getHistoryToday(),
       getExchangeRate(),
       getGoldPrice(),
+      getSilverData(),
       getFuelPrice(),
       getMoyuDaily(),
       getAiNews(),
@@ -2723,6 +2574,7 @@ async function main() {
     const historyData = historyResult.status === 'fulfilled' ? historyResult.value : { success: false, error: historyResult.reason };
     const rateData = rateResult.status === 'fulfilled' ? rateResult.value : { success: false, error: rateResult.reason };
     const goldData = goldResult.status === 'fulfilled' ? goldResult.value : { success: false, error: goldResult.reason };
+    const silverData = silverResult.status === 'fulfilled' ? silverResult.value : { success: false, error: silverResult.reason };
     const fuelData = fuelResult.status === 'fulfilled' ? fuelResult.value : { success: false, error: fuelResult.reason };
     const moyuData = moyuResult.status === 'fulfilled' ? moyuResult.value : { success: false, error: moyuResult.reason };
     const aiNewsData = aiNewsResult.status === 'fulfilled' ? aiNewsResult.value : { success: false, error: aiNewsResult.reason };
@@ -2760,10 +2612,20 @@ async function main() {
     }
 
     // 6. 构建HTML内容
-    const htmlContent = buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData);
+    const htmlContent = buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, silverData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData);
+
+    // 6.5. 压缩 HTML 内容 (以满足 wxpusher 40000 字符限制)
+    console.log('正在压缩 HTML 内容...');
+    const minifiedHtml = minify(htmlContent, {
+      collapseWhitespace: true,
+      removeComments: true,
+      minifyCSS: true,
+      removeEmptyAttributes: true
+    });
+    console.log(`HTML 压缩前长度: ${htmlContent.length}, 压缩后长度: ${minifiedHtml.length}`);
 
     // 7. 发送消息
-    const sendResult = await sendMessage(htmlContent, timeInfo.dateTime, uidResult.uid);
+    const sendResult = await sendMessage(minifiedHtml, timeInfo.dateTime, uidResult.uid);
 
     console.log('========== 每日消息推送执行完成 ==========');
 

@@ -7,6 +7,14 @@ const CONFIG = {
     HEFENG_KEY_ID: process.env.HEFENG_KEY_ID,
     HEFENG_PROJECT_ID: process.env.HEFENG_PROJECT_ID,
 
+    // Tanshu API
+    TANSHU_API_KEY: process.env.TANSHU_API_KEY || 'ba31270d66a5f57bd6ba70bbd180eb9e',
+    TANSHU_FUEL_LIST_API: 'https://api.tanshuapi.com/api/youjia/v1/index',
+    TANSHU_FUEL_TREND_API: 'https://api.tanshuapi.com/api/youjia/v1/trend',
+    TANSHU_SILVER_SH_API: 'https://api.tanshuapi.com/api/silver/v1/shgold3',
+    TANSHU_SILVER_FUTURE_API: 'https://api.tanshuapi.com/api/silver/v1/shfuture',
+    TANSHU_SILVER_LONDON_API: 'https://api.tanshuapi.com/api/silver/v1/london',
+
     // 其他配置
     WXPUSHER_APP_TOKEN: process.env.WXPUSHER_APP_TOKEN || 'AT_5JhPdnTymxUtSR1sMxRMqSoKPJhXhL56',
     LOCATION: '余杭',
@@ -17,7 +25,6 @@ const CONFIG = {
     EXCHANGE_API: 'https://60s.viki.moe/v2/exchange-rate',
     AI_NEWS_API: 'https://60s.viki.moe/v2/ai-news',
     GOLD_API: 'https://60s.viki.moe/v2/gold-price',
-    FUEL_API: 'https://60s.viki.moe/v2/fuel-price',
     MOYU_API: 'https://60s.viki.moe/v2/moyu',
     NEWS_60S_API: 'https://60s.viki.moe/v2/60s',
     REDNOTE_API: 'https://60s.viki.moe/v2/rednote',
@@ -49,14 +56,13 @@ const CONFIG = {
 
     // 模块开关配置：控制哪些内容包含在推送中 (true开启, false关闭)
     SHOW_MODULES: {
-        WEATHER: true,      // 天气（含预警、降水、轮播）
-        LUCK: false,         // 运势跑马灯
-        HISTORY: false,      // 历史上的今天
-        GOLD: false,         // 黄金价格
-        EXCHANGE: false,     // 汇率
-        FUEL: false,         // 汽油价格
-        MOYU: false,         // 摸鱼日报
-        AI_NEWS: false,      // AI 资讯
+        WEATHER: false,      // 天气（含预警、降水、轮播）
+        HISTORY: true,      // 历史上的今天
+        GOLD: true,         // 黄金价格
+        EXCHANGE: true,     // 汇率
+        FUEL: true,         // 汽油价格
+        MOYU: true,         // 摸鱼日报
+        AI_NEWS: true,      // AI 资讯
         NEWS_60S: false,     // 60秒读懂世界
         HOT_LIST: {
             DOUYIN: false,    // 抖音
@@ -75,7 +81,9 @@ const CONFIG = {
         },
         BING_WALLPAPER: true,// Bing每日壁纸
         yiYan: true,        // 一言
-        KFC: true           // 疯狂星期四（仍需满足周四条件）
+        LUCK: true,         // 运势跑马灯
+        KFC: false,          // 疯狂星期四（仍需满足周四条件）
+        QR_CODE: false       // 二维码分享 (默认关闭，仅特定时段开启)
     }
 };
 
