@@ -1357,11 +1357,7 @@ async function getMaoyanTv() { return fetchApi(CONFIG.MAOYAN_TV_API, '猫眼电�
 async function getMaoyanWeb() { return fetchApi(CONFIG.MAOYAN_WEB_API, '猫眼网剧'); }
 async function getDouyinHot() { return fetchApi(CONFIG.DOUYIN_API, '抖音热搜'); }
 async function getBiliHot() { return fetchApi(CONFIG.BILI_API, 'B站热搜'); }
-async function getQuarkHot() { return fetchApi(CONFIG.QUARK_API, '夸克热点'); }
-async function getBaiduHot() { return fetchApi(CONFIG.BAIDU_HOT_API, '百度热搜'); }
-async function getBaiduTeleplay() { return fetchApi(CONFIG.BAIDU_TELEPLAY_API, '百度电视剧'); }
 async function getBaiduTieba() { return fetchApi(CONFIG.BAIDU_TIEBA_API, '百度贴吧'); }
-async function getDongchediHot() { return fetchApi(CONFIG.DONGCHEDI_API, '懂车帝热搜'); }
 
 // 获取Bing壁纸
 async function getBingWallpaper() {
@@ -1830,21 +1826,15 @@ function buildHotListModule(hotData) {
     { id: 'bili', name: 'B站', data: hotData.bili, type: 'list', config: 'BILI',
       map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
     { id: 'weibo', name: '微博', data: hotData.weibo, type: 'list', config: 'WEIBO',
-      map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
+      map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
     { id: 'rednote', name: '小红书', data: hotData.rednote, type: 'list', config: 'REDNOTE',
       map: item => ({ title: item.title, desc: `热度: ${item.score}`, link: item.link, rank: item.rank }) },
     { id: 'toutiao', name: '头条', data: hotData.toutiao, type: 'list', config: 'TOUTIAO',
       map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
     { id: 'zhihu', name: '知乎', data: hotData.zhihu, type: 'list', config: 'ZHIHU',
       map: item => ({ title: item.title, desc: item.hot_value_desc || item.detail, link: item.link, rank: null }) },
-    { id: 'quark', name: '夸克', data: hotData.quark, type: 'list', config: 'QUARK',
-      map: item => ({ title: item.title, desc: item.hot_value, link: item.link, rank: null }) },
-    { id: 'baidu', name: '百度', data: hotData.baiduHot, type: 'list', config: 'BAIDU',
-      map: item => ({ title: item.title, desc: item.desc, link: item.url, rank: item.rank }) },
     { id: 'tieba', name: '贴吧', data: hotData.baiduTieba, type: 'list', config: 'TIEBA',
       map: item => ({ title: item.title, desc: item.desc, link: item.url, rank: item.rank }) },
-    { id: 'dongchedi', name: '懂车帝', data: hotData.dongchedi, type: 'list', config: 'DONGCHEDI',
-      map: item => ({ title: item.title, desc: '', link: item.url, rank: null }) },
     { id: 'movie', name: '电影', data: hotData.maoyanMovie, type: 'maoyan', config: 'MOVIE',
       map: item => ({ title: item.movie_name, desc: `${item.box_office}${item.box_office_unit}` }) },
     { id: 'tv', name: '剧集', data: hotData.maoyanTv, type: 'maoyan', config: 'TV',
@@ -2501,6 +2491,11 @@ async function main() {
     // 2. 获取和风天气Token
     const token = await getValidHefengToken();
 
+    // Helper for conditional fetching
+    const fetchIf = (condition, promise) => {
+        return condition ? promise : Promise.resolve({ success: false, skipped: true });
+    };
+
     // 3. 并行获取数据（提高效率）
     const [
       weatherResult,
@@ -2528,42 +2523,34 @@ async function main() {
       maoyanWebResult,
       douyinResult,
       biliResult,
-      quarkResult,
-      baiduHotResult,
-      baiduTeleplayResult,
-      baiduTiebaResult,
-      dongchediResult
+      baiduTiebaResult
     ] = await Promise.allSettled([
-      getCurrentWeather(),
-      getWeatherForecast(),
-      getMinutePrecipitation(token),
-      getWeatherAlerts(token),
-      getLuck(),
-      getHistoryToday(),
-      getExchangeRate(),
-      getGoldPrice(),
-      getSilverData(),
-      getFuelPrice(),
-      getMoyuDaily(),
-      getAiNews(),
-      get60sNews(),
-      getBingWallpaper(),
-      getKfcContent(timeInfo.isThursday),
-      getHitokoto(),
-      getRedNoteHot(),
-      getWeiboHot(),
-      getToutiaoHot(),
-      getZhihuHot(),
-      getMaoyanMovie(),
-      getMaoyanTv(),
-      getMaoyanWeb(),
-      getDouyinHot(),
-      getBiliHot(),
-      getQuarkHot(),
-      getBaiduHot(),
-      getBaiduTeleplay(),
-      getBaiduTieba(),
-      getDongchediHot()
+      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getCurrentWeather()),
+      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherForecast()),
+      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getMinutePrecipitation(token)),
+      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherAlerts(token)),
+      fetchIf(CONFIG.SHOW_MODULES.LUCK, getLuck()),
+      fetchIf(CONFIG.SHOW_MODULES.HISTORY, getHistoryToday()),
+      fetchIf(CONFIG.SHOW_MODULES.EXCHANGE, getExchangeRate()),
+      fetchIf(CONFIG.SHOW_MODULES.GOLD, getGoldPrice()),
+      fetchIf(CONFIG.SHOW_MODULES.GOLD, getSilverData()),
+      fetchIf(CONFIG.SHOW_MODULES.FUEL, getFuelPrice()),
+      fetchIf(CONFIG.SHOW_MODULES.MOYU, getMoyuDaily()),
+      fetchIf(CONFIG.SHOW_MODULES.AI_NEWS, getAiNews()),
+      fetchIf(CONFIG.SHOW_MODULES.NEWS_60S, get60sNews()),
+      fetchIf(CONFIG.SHOW_MODULES.BING_WALLPAPER, getBingWallpaper()),
+      fetchIf(CONFIG.SHOW_MODULES.KFC, getKfcContent(timeInfo.isThursday)),
+      fetchIf(CONFIG.SHOW_MODULES.yiYan, getHitokoto()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.REDNOTE, getRedNoteHot()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEIBO, getWeiboHot()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TOUTIAO, getToutiaoHot()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.ZHIHU, getZhihuHot()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.MOVIE, getMaoyanMovie()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TV, getMaoyanTv()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEB, getMaoyanWeb()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.DOUYIN, getDouyinHot()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.BILI, getBiliHot()),
+      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TIEBA, getBaiduTieba())
     ]);
 
     const weatherData = weatherResult.status === 'fulfilled' ? weatherResult.value : { success: false, error: weatherResult.reason };
@@ -2593,11 +2580,7 @@ async function main() {
         maoyanWeb: maoyanWebResult.status === 'fulfilled' ? maoyanWebResult.value : { success: false },
         douyin: douyinResult.status === 'fulfilled' ? douyinResult.value : { success: false },
         bili: biliResult.status === 'fulfilled' ? biliResult.value : { success: false },
-        quark: quarkResult.status === 'fulfilled' ? quarkResult.value : { success: false },
-        baiduHot: baiduHotResult.status === 'fulfilled' ? baiduHotResult.value : { success: false },
-        baiduTeleplay: baiduTeleplayResult.status === 'fulfilled' ? baiduTeleplayResult.value : { success: false },
-        baiduTieba: baiduTiebaResult.status === 'fulfilled' ? baiduTiebaResult.value : { success: false },
-        dongchedi: dongchediResult.status === 'fulfilled' ? dongchediResult.value : { success: false }
+        baiduTieba: baiduTiebaResult.status === 'fulfilled' ? baiduTiebaResult.value : { success: false }
     };
 
     // 4. 检查关键数据

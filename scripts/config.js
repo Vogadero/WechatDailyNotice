@@ -36,11 +36,7 @@ const CONFIG = {
     MAOYAN_WEB_API: 'https://60s.viki.moe/v2/maoyan/realtime/web',
     DOUYIN_API: 'https://60s.viki.moe/v2/douyin',
     BILI_API: 'https://60s.viki.moe/v2/bili',
-    QUARK_API: 'https://60s.viki.moe/v2/quark',
-    BAIDU_HOT_API: 'https://60s.viki.moe/v2/baidu/hot',
-    BAIDU_TELEPLAY_API: 'https://60s.viki.moe/v2/baidu/teleplay',
     BAIDU_TIEBA_API: 'https://60s.viki.moe/v2/baidu/tieba',
-    DONGCHEDI_API: 'https://60s.viki.moe/v2/dongchedi',
     BING_API: 'https://60s.viki.moe/v2/bing',
     UID_API: 'https://eob7gu4tu9r7a8s.m.pipedream.net',
     HITOKOTO_API: 'https://v1.hitokoto.cn',
@@ -71,10 +67,7 @@ const CONFIG = {
             REDNOTE: false,   // 小红书
             TOUTIAO: false,   // 头条
             ZHIHU: false,     // 知乎
-            QUARK: false,     // 夸克
-            BAIDU: false,     // 百度
             TIEBA: false,     // 贴吧
-            DONGCHEDI: false, // 懂车帝
             MOVIE: false,     // 猫眼电影
             TV: false,        // 猫眼剧集
             WEB: false        // 猫眼网剧
@@ -82,8 +75,8 @@ const CONFIG = {
         BING_WALLPAPER: true,// Bing每日壁纸
         yiYan: true,        // 一言
         LUCK: true,         // 运势跑马灯
-        KFC: false,          // 疯狂星期四（仍需满足周四条件）
-        QR_CODE: false       // 二维码分享 (默认关闭，仅特定时段开启)
+        KFC: true,          // 疯狂星期四（仍需满足周四条件）
+        QR_CODE: true       // 二维码分享 (默认关闭，仅特定时段开启)
     }
 };
 
