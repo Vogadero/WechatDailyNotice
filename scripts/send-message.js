@@ -1497,7 +1497,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   // Pure CSS Marquee & Highlight Setup
   let gridItems = '';
   let adviceItems = '';
-  let cssStyles = '';
+  let cssStyles = '<style>';
 
   if (indicesToShow.length > 0) {
     const count = indicesToShow.length;
@@ -1570,7 +1570,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
         // 3. Advice Item
         let adviceText = item.description || item.detail || item.category || item.text || item.desc || "暂无详细建议";
         adviceItems += `
-            <div class="wai">
+            <div class="wai" style="height: 36px; box-sizing: border-box;">
                 <span style="color: #f472b6; margin-right: 8px; font-weight: bold; flex-shrink: 0; background: rgba(0,0,0,0.4); z-index: 2; padding-right: 6px;">${item.name}</span>
                 <div style="flex: 1; overflow: hidden; white-space: nowrap;">
                     <span class="h-scroll-${uniqueId}">${adviceText}</span>
