@@ -1867,14 +1867,14 @@ function buildHotListModule(hotData) {
          : `<div class="ht-tt">${mapped.title}</div>`;
        
        return `
-         <div class="ht-it">
+         ${mapped.link ? `<a href="${mapped.link}" class="ht-it" style="text-decoration:none;color:inherit">` : `<div class="ht-it">`}
            <div class="ht-rk" style="color: ${rankColor}">${rank}</div>
            <div class="ht-ct">
              ${titleHtml}
              <div class="ht-dc">${mapped.desc}</div>
            </div>
-           ${mapped.link ? `<a href="${mapped.link}" class="ht-lk">🔗</a>` : ''}
-         </div>
+           ${mapped.link ? `<span class="ht-lk">🔗</span>` : ''}
+         ${mapped.link ? `</a>` : `</div>`}
        `;
     }).join('');
     
@@ -2097,7 +2097,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     const h = historyData.data;
     const content = `
       <div style="color:#94a3b8;font-size:12px;margin-bottom:15px">${h.date} (${h.items.length} 个事件)</div>
-      ${h.items.slice(0,10).map(i => `<div class="hi"><div class="hy">${i.year}</div><div class="ht">${i.title}${i.link?`<a href="${i.link}" class="hl">🔗</a>`:''}</div><div class="hd">${i.description.substring(0,60)}...</div></div>`).join('')}
+      ${h.items.slice(0,10).map(i => `${i.link?`<a href="${i.link}" class="hi" style="display:block;text-decoration:none;color:inherit">`:'<div class="hi">'}<div class="hy">${i.year}</div><div class="ht">${i.title}${i.link?'<span class="hl">🔗</span>':''}</div><div class="hd">${i.description.substring(0,60)}...</div>${i.link?'</a>':'</div>'}`).join('')}
       <div style="text-align:center;margin-top:20px;font-size:10px;color:#475569">数据来源: 百度百科</div>
       <style>.hi{margin-bottom:15px;border-left:2px solid #a78bfa;padding-left:12px}.hy{color:#a78bfa;font-size:14px;font-weight:bold;margin-bottom:2px}.ht{color:#e2e8f0;font-size:13px;font-weight:500;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}.hd{color:#94a3b8;font-size:12px;line-height:1.4}.hl{color:#a78bfa;text-decoration:none;font-size:12px;margin-left:8px;opacity:0.7}</style>
     `;
@@ -2121,7 +2121,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     const ai = aiNewsData.data;
     const content = `
       <div style="color:#94a3b8;font-size:12px;margin-bottom:20px">更新日期: ${ai.date}</div>
-      ${ai.news.map(i => `<div class="ni"><div class="nt">${i.title}</div><div class="nd">${i.detail||'暂无详细描述'}</div><div class="nf"><div class="ns">${i.source}</div>${i.link?`<a href="${i.link}" class="nl">查看原文</a>`:''}</div></div>`).join('')}
+      ${ai.news.map(i => `${i.link?`<a href="${i.link}" class="ni" style="display:block;text-decoration:none;color:inherit">`:'<div class="ni">'}<div class="nt">${i.title}</div><div class="nd">${i.detail||'暂无详细描述'}</div><div class="nf"><div class="ns">${i.source}</div>${i.link?'<span class="nl">查看原文</span>':''}</div>${i.link?'</a>':'</div>'}`).join('')}
       <style>.ni{margin-bottom:20px;background:rgba(59,130,246,0.05);padding:15px;border-radius:12px;border:1px solid rgba(59,130,246,0.1)}.nt{color:#60a5fa;font-size:15px;font-weight:bold;margin-bottom:8px;line-height:1.4}.nd{color:#cbd5e1;font-size:13px;line-height:1.6;margin-bottom:10px}.nf{display:flex;justify-content:space-between;align-items:center}.ns{color:#64748b;font-size:11px}.nl{color:#3b82f6;font-size:11px;text-decoration:none;padding:2px 8px;border:1px solid #3b82f6;border-radius:4px}</style>
     `;
     html += genDrawer('ai-drawer-toggle', '🤖', 'AI 资讯快报', content);
@@ -2181,14 +2181,14 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
         <div class="mt-cnt mt-c-gold">
             <div style="color:#94a3b8;font-size:12px;margin-bottom:10px">更新时间: ${g.date}</div>${gh}
         </div>
-        <div class="mt-cnt mt-c-silver">${sh || '<div style="text-align:center;color:#64748b;padding:20px;">暂无白银数据</div>'}</div>
+        <div class="mt-cnt mt-c-silver"><div style="color:#94a3b8;font-size:12px;margin-bottom:10px">更新时间: ${g.date}</div>${sh || '<div style="text-align:center;color:#64748b;padding:20px;">暂无白银数据</div>'}</div>
       </div>
       <style>
         #gold-drawer-toggle:checked~.do{display:block}#gold-drawer-toggle:checked~.gold-drawer{right:0!important}
         .mt-tabs{display:flex;gap:10px;margin-bottom:15px}
         
         #mt-gold:checked~.mt-tabs label[for="mt-gold"],
-        #mt-silver:checked~.mt-tabs label[for="mt-silver"]{background:rgba(251,191,36,0.2);color:#fbbf24;border-color:rgba(251,191,36,0.5)}
+        #mt-silver:checked~.mt-tabs label[for="mt-silver"]{color:#fbbf24;border-color:rgba(251,191,36,0.5)}
         
         .mt-lbl{flex:1;text-align:center;padding:8px;background:rgba(255,255,255,0.05);border-radius:8px;color:#94a3b8;font-size:13px;border:1px solid transparent;transition:all 0.2s}
         .mt-cnt{display:none;animation:fadeIn 0.3s ease}
