@@ -1,0 +1,84 @@
+# 外部接口文档 (API Interfaces)
+
+本项目集成了多个外部 API 以获取实时数据。以下是所有使用的接口清单及说明。
+
+## 1. 和风天气 (QWeather)
+用于获取专业气象数据，支持 JWT 鉴权。
+
+- **Base URL**: (环境变量配置, 例如 `https://devapi.qweather.com/v7`)
+- **鉴权方式**: JWT (EdDSA 签名)
+- **接口列表**:
+  - `GET /v7/minutely/5m`: 获取分钟级降水预报
+    - 参数: `location` (经纬度)
+  - `GET /weatheralert/v1/current`: 获取天气预警信息
+    - 参数: `localTime=true`
+
+## 2. 60s 聚合接口 (Viki 60s)
+主要数据源，提供多种生活、资讯、娱乐数据。
+
+- **Base URL**: `https://60s.viki.moe/v2`
+- **接口列表**:
+  - `GET /weather`: 实时天气 (包含空气质量、生活指数等)
+  - `GET /weather/forecast`: 天气预报 (7天)
+  - `GET /kfc`: 肯德基疯狂星期四文案
+  - `GET /luck`: 每日运势
+  - `GET /today-in-history`: 历史上的今天
+  - `GET /exchange-rate`: 实时汇率 (CNY基准)
+  - `GET /ai-news`: AI 行业资讯
+  - `GET /gold-price`: 基础金价与品牌金价
+  - `GET /moyu`: 摸鱼日报 (节假日倒计时)
+  - `GET /60s`: 60秒读懂世界新闻
+  - `GET /bing`: Bing 每日壁纸
+  - **热榜系列**:
+    - `/rednote`: 小红书热点
+    - `/weibo`: 微博热搜
+    - `/toutiao`: 头条热榜
+    - `/zhihu`: 知乎热榜
+    - `/douyin`: 抖音热榜
+    - `/bili`: B站热搜
+    - `/baidu/tieba`: 百度贴吧热议
+    - `/maoyan/realtime/movie`: 猫眼电影票房
+    - `/maoyan/realtime/tv`: 猫眼电视剧热度
+    - `/maoyan/realtime/web`: 猫眼网剧热度
+
+## 3. 探数数据 (Tanshu API)
+用于获取财经与油价数据。
+
+- **Base URL**: `https://api.tanshuapi.com/api`
+- **鉴权方式**: Query 参数 `key`
+- **接口列表**:
+  - `GET /youjia/v1/index`: 各省份今日油价
+  - `GET /youjia/v1/trend`: 油价涨跌趋势
+  - `GET /silver/v1/shgold3`: 上海黄金交易所白银数据
+  - `GET /silver/v1/shfuture`: 上海期货交易所白银数据
+  - `GET /silver/v1/london`: 伦敦金银市场数据
+
+## 4. 一言 (Hitokoto)
+用于获取每日一句。
+
+- **URL**: `https://v1.hitokoto.cn`
+- **接口列表**:
+  - `GET /`: 获取随机一言 (包含来源、分类)
+
+## 5. WxPusher
+用于消息推送服务。
+
+- **URL**: `https://wxpusher.zjiecode.com/api/send/message`
+- **Method**: `POST`
+- **Body**:
+  - `appToken`: 应用 Token
+  - `content`: HTML 内容
+  - `summary`: 消息摘要
+  - `uids`: 接收用户 ID 列表
+  - `contentType`: 2 (HTML)
+
+## 6. UID 服务 (自定义)
+用于获取目标用户的 UID (可能是动态更新的)。
+
+- **URL**: `https://eob7gu4tu9r7a8s.m.pipedream.net`
+- **接口列表**:
+  - `GET /`: 获取最新的 UID 列表
+
+---
+
+**注意**: 部分接口需要环境变量配置密钥才能正常访问，请参考 `README.md` 进行配置。
