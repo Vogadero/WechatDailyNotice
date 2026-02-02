@@ -2080,7 +2080,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     html += buildWeatherCarousel(weatherData, forecastData, timeInfo);
   }
 
-  // 60秒读懂世界 - 科技感终端风格（优化跑马灯）
+  // 60秒读懂世界 - 科技感终端风格（真正的无缝循环跑马灯）
   if (CONFIG.SHOW_MODULES.NEWS_60S && news60sData && news60sData.success && news60sData.data && Array.isArray(news60sData.data.news)) {
     const n = news60sData.data;
     // 生成新闻列表HTML
@@ -2090,6 +2090,15 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
         <span class="n60-txt">${item}</span>
       </div>
     `).join('');
+
+    // 添加分隔符
+    const separator = `
+      <div class="n60-sep">
+        <div class="n60-sep-line"></div>
+        <span class="n60-sep-text">● ● ● 循环播报 ● ● ●</span>
+        <div class="n60-sep-line"></div>
+      </div>
+    `;
 
     html += `
       <div class="n60-wrap">
@@ -2108,7 +2117,18 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
           <div class="n60-scan"></div>
 
           <div class="n60-scroll">
-            ${newsItemsHtml}
+            <!-- 第一份内容 -->
+            <div class="n60-content">
+              ${newsItemsHtml}
+            </div>
+            <!-- 分隔符 -->
+            ${separator}
+            <!-- 第二份内容（用于无缝循环） -->
+            <div class="n60-content">
+              ${newsItemsHtml}
+            </div>
+            <!-- 分隔符 -->
+            ${separator}
           </div>
         </div>
 
@@ -2124,7 +2144,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
           .n60-txt { color: #e2e8f0; line-height: 1.5; }
           .n60-wrap { margin: 20px 0; background: #0f172a; border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 12px; overflow: hidden; position: relative; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
           .n60-hd { background: rgba(16, 185, 129, 0.1); padding: 10px 15px; border-bottom: 1px solid rgba(16, 185, 129, 0.2); display: flex; justify-content: space-between; align-items: center; }
-          .n60-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981; }
+          .n60-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981; animation: pulse 2s ease-in-out infinite; }
           .n60-tt { color: #10b981; font-weight: bold; font-family: monospace; letter-spacing: 1px; font-size: 13px; }
           .n60-date { color: #64748b; font-size: 10px; font-family: monospace; }
           .n60-cnt { 
@@ -2132,9 +2152,6 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
             overflow: hidden; 
             position: relative; 
             padding: 15px;
-            /* 添加遮罩渐变，隐藏顶部和底部的内容切换 */
-            mask: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
-            -webkit-mask: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
           }
           .n60-scan { 
             position: absolute; 
@@ -2145,32 +2162,48 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
             background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.05) 50%, transparent); 
             background-size: 100% 4px; 
             pointer-events: none; 
-            z-index: 2; 
+            z-index: 2;
+            animation: scanLine 3s ease-in-out infinite;
           }
           .n60-scroll { 
-            /* 优化动画：使用 transform3d 开启硬件加速，添加缓动函数 */
-            animation: scrollUpSmooth 60s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite;
+            /* 真正的无缝循环：滚动距离为一半内容的高度 */
+            animation: scrollUpContinuous 90s linear infinite;
             font-size: 13px;
-            /* 确保内容足够高以支持平滑滚动 */
-            padding-bottom: 300px;
+            will-change: transform;
+          }
+          .n60-content {
+            margin-bottom: 20px;
+          }
+          .n60-sep {
+            display: flex;
+            align-items: center;
+            margin: 20px 0;
+            opacity: 0.6;
+          }
+          .n60-sep-line {
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(to right, transparent, rgba(16, 185, 129, 0.5), transparent);
+          }
+          .n60-sep-text {
+            color: #10b981;
+            font-size: 10px;
+            font-family: monospace;
+            margin: 0 15px;
+            white-space: nowrap;
+            animation: glow 2s ease-in-out infinite alternate;
           }
           .n60-ft { padding: 8px 15px; border-top: 1px solid rgba(16, 185, 129, 0.2); background: rgba(15, 23, 42, 0.8); font-family: monospace; font-size: 10px; color: #10b981; }
           .n60-blk { animation: blink 1s step-end infinite; }
           
-          /* 优化的滚动动画 - 使用 transform3d 和更平滑的过渡 */
-          @keyframes scrollUpSmooth {
+          /* 无缝循环滚动动画 */
+          @keyframes scrollUpContinuous {
             0% { 
               transform: translate3d(0, 0, 0); 
             }
-            95% { 
-              transform: translate3d(0, -100%, 0); 
-            }
-            95.1% {
-              /* 瞬间重置到底部，但由于遮罩效果，用户看不到 */
-              transform: translate3d(0, 100%, 0);
-            }
             100% { 
-              transform: translate3d(0, 0, 0); 
+              /* 滚动到第一份内容完全消失的位置，此时第二份内容刚好开始显示 */
+              transform: translate3d(0, -50%, 0); 
             }
           }
           
@@ -2179,10 +2212,26 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
             50% { opacity: 0; }
           }
           
+          @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(1.1); }
+          }
+          
+          @keyframes glow {
+            0% { text-shadow: 0 0 5px rgba(16, 185, 129, 0.5); }
+            100% { text-shadow: 0 0 10px rgba(16, 185, 129, 0.8), 0 0 15px rgba(16, 185, 129, 0.3); }
+          }
+          
+          @keyframes scanLine {
+            0%, 100% { transform: translateY(0); opacity: 0.3; }
+            50% { transform: translateY(20px); opacity: 0.7; }
+          }
+          
           /* 响应式优化 */
           @media (max-width: 480px) {
             .n60-cnt { height: 250px; }
             .n60-scroll { font-size: 12px; }
+            .n60-sep-text { font-size: 9px; margin: 0 10px; }
           }
         </style>
       </div>
