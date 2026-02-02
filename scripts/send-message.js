@@ -9,6 +9,7 @@ const isScheduled = process.argv[2] === 'true';
 
 // 配置
 const CONFIG = require('./config');
+
 // 动态导入 jose 库（ESM）
 let jose;
 async function importJose() {
@@ -17,6 +18,61 @@ async function importJose() {
   }
   return jose;
 }
+
+// 添加延迟函数
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// 带重试的 axios 请求函数
+async function axiosWithRetry(config, maxRetries = 3, baseDelay = 1000) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await axios(config);
+      return response;
+    } catch (error) {
+      console.warn(`请求失败 (尝试 ${attempt}/${maxRetries}):`, error.message);
+      
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // 指数退避延迟
+      const delayTime = baseDelay * Math.pow(2, attempt - 1) + Math.random() * 1000;
+      console.log(`等待 ${Math.round(delayTime)}ms 后重试...`);
+      await delay(delayTime);
+    }
+  }
+}
+
+// API 调用队列管理
+class ApiQueue {
+  constructor() {
+    this.domainQueues = new Map();
+    this.defaultDelay = 500; // 默认延迟 500ms
+  }
+
+  // 根据域名分组延迟调用
+  async enqueue(url, requestFn) {
+    const domain = new URL(url).hostname;
+    
+    if (!this.domainQueues.has(domain)) {
+      this.domainQueues.set(domain, Promise.resolve());
+    }
+    
+    const queue = this.domainQueues.get(domain);
+    
+    const newQueue = queue.then(async () => {
+      await delay(this.defaultDelay);
+      return requestFn();
+    });
+    
+    this.domainQueues.set(domain, newQueue);
+    return newQueue;
+  }
+}
+
+const apiQueue = new ApiQueue();
 
 // 获取当前时间信息
 function getCurrentTimeInfo() {
@@ -297,82 +353,86 @@ async function getLatestUid() {
   }
 }
 
-// 获取实时天气
+// 获取实时天气 - 优化版
 async function getCurrentWeather() {
-  try {
-    console.log(`正在获取${CONFIG.LOCATION}实时天气...`);
-    const response = await axios.get(`${CONFIG.WEATHER_API_BASE}/weather`, {
-      params: {
-        query: CONFIG.LOCATION,
-        encoding: 'json'
-      },
-      timeout: 10000
-    });
+  return apiQueue.enqueue(`${CONFIG.WEATHER_API_BASE}/weather`, async () => {
+    try {
+      console.log(`正在获取${CONFIG.LOCATION}实时天气...`);
+      const response = await axiosWithRetry({
+        method: 'get',
+        url: `${CONFIG.WEATHER_API_BASE}/weather`,
+        params: {
+          query: CONFIG.LOCATION,
+          encoding: 'json'
+        },
+        timeout: 10000
+      });
 
-    if (response.data.code === 200) {
-      const data = response.data.data;
+      if (response.data.code === 200) {
+        const data = response.data.data;
 
-      // 解析日出日落时间（只取时分秒）
-      let sunriseTime = data.sunrise.sunrise;
-      let sunsetTime = data.sunrise.sunset;
+        // 解析日出日落时间（只取时分秒）
+        let sunriseTime = data.sunrise.sunrise;
+        let sunsetTime = data.sunrise.sunset;
 
-      // 如果有desc字段，优先使用
-      if (data.sunrise.sunrise_desc) {
-        sunriseTime = data.sunrise.sunrise_desc;
-      }
-      if (data.sunrise.sunset_desc) {
-        sunsetTime = data.sunrise.sunset_desc;
-      }
-
-      // 如果没有desc，尝试从字符串中提取时间部分
-      if (!data.sunrise.sunrise_desc && sunriseTime.includes(' ')) {
-        sunriseTime = sunriseTime.split(' ')[1] || sunriseTime;
-      }
-      if (!data.sunrise.sunset_desc && sunsetTime.includes(' ')) {
-        sunsetTime = sunsetTime.split(' ')[1] || sunsetTime;
-      }
-
-      return {
-        success: true,
-        data: {
-          location: data.location.name || CONFIG.LOCATION,
-          province: data.location.province || '',
-          city: data.location.city || '',
-          temperature: data.weather.temperature,
-          condition: data.weather.condition,
-          condition_code: data.weather.condition_code || '',
-          humidity: data.weather.humidity,
-          pressure: data.weather.pressure,
-          precipitation: data.weather.precipitation || 0,
-          wind_direction: data.weather.wind_direction,
-          wind_power: data.weather.wind_power,
-          weather_icon: data.weather.weather_icon || '',
-          updated: data.weather.updated || '',
-          airQuality: data.air_quality.quality,
-          aqi: data.air_quality.aqi,
-          pm25: data.air_quality.pm25,
-          pm10: data.air_quality.pm10,
-          sunrise: sunriseTime,
-          sunset: sunsetTime,
-          lifeIndices: data.life_indices || [],
-          alerts: data.alerts || [],
-          hasAlerts: data.alerts && data.alerts.length > 0,
-          weather_colors: data.weather.weather_colors || ['#667eea', '#764ba2']
+        // 如果有desc字段，优先使用
+        if (data.sunrise.sunrise_desc) {
+          sunriseTime = data.sunrise.sunrise_desc;
         }
-      };
-    } else {
+        if (data.sunrise.sunset_desc) {
+          sunsetTime = data.sunrise.sunset_desc;
+        }
+
+        // 如果没有desc，尝试从字符串中提取时间部分
+        if (!data.sunrise.sunrise_desc && sunriseTime.includes(' ')) {
+          sunriseTime = sunriseTime.split(' ')[1] || sunriseTime;
+        }
+        if (!data.sunrise.sunset_desc && sunsetTime.includes(' ')) {
+          sunsetTime = sunsetTime.split(' ')[1] || sunsetTime;
+        }
+
+        return {
+          success: true,
+          data: {
+            location: data.location.name || CONFIG.LOCATION,
+            province: data.location.province || '',
+            city: data.location.city || '',
+            temperature: data.weather.temperature,
+            condition: data.weather.condition,
+            condition_code: data.weather.condition_code || '',
+            humidity: data.weather.humidity,
+            pressure: data.weather.pressure,
+            precipitation: data.weather.precipitation || 0,
+            wind_direction: data.weather.wind_direction,
+            wind_power: data.weather.wind_power,
+            weather_icon: data.weather.weather_icon || '',
+            updated: data.weather.updated || '',
+            airQuality: data.air_quality.quality,
+            aqi: data.air_quality.aqi,
+            pm25: data.air_quality.pm25,
+            pm10: data.air_quality.pm10,
+            sunrise: sunriseTime,
+            sunset: sunsetTime,
+            lifeIndices: data.life_indices || [],
+            alerts: data.alerts || [],
+            hasAlerts: data.alerts && data.alerts.length > 0,
+            weather_colors: data.weather.weather_colors || ['#667eea', '#764ba2']
+          }
+        };
+      } else {
+        return {
+          success: false,
+          error: `天气API返回错误: ${response.data.message}`
+        };
+      }
+    } catch (error) {
+      console.error('获取实时天气失败:', error.message);
       return {
         success: false,
-        error: `天气API返回错误: ${response.data.message}`
+        error: `获取天气失败: ${error.message}`
       };
     }
-  } catch (error) {
-    console.error('获取实时天气失败:', error.message);
-    return {
-      success: false,
-      error: `获取天气失败: ${error.message}`
-    };
-  }
+  });
 }
 
 // 获取天气预报
@@ -762,49 +822,53 @@ async function getKfcContent(isThursday) {
   }
 }
 
-// 获取一言
+// 获取一言 - 优化版
 async function getHitokoto() {
-  try {
-    console.log('正在获取一言内容...');
-    const response = await axios.get(CONFIG.HITOKOTO_API, {
-      timeout: 10000
-    });
+  return apiQueue.enqueue(CONFIG.HITOKOTO_API, async () => {
+    try {
+      console.log('正在获取一言内容...');
+      const response = await axiosWithRetry({
+        method: 'get',
+        url: CONFIG.HITOKOTO_API,
+        timeout: 10000
+      });
 
-    const hitokoto = response.data.hitokoto;
-    const from = response.data.from || '未知';
-    const type = response.data.type || '';
+      const hitokoto = response.data.hitokoto;
+      const from = response.data.from || '未知';
+      const type = response.data.type || '';
 
-    const typeMap = {
-      'a': '动画',
-      'b': '漫画',
-      'c': '游戏',
-      'd': '文学',
-      'e': '原创',
-      'f': '网络',
-      'g': '其他',
-      'h': '影视',
-      'i': '诗词',
-      'j': '网易云',
-      'k': '哲学',
-      'l': '抖机灵'
-    };
+      const typeMap = {
+        'a': '动画',
+        'b': '漫画',
+        'c': '游戏',
+        'd': '文学',
+        'e': '原创',
+        'f': '网络',
+        'g': '其他',
+        'h': '影视',
+        'i': '诗词',
+        'j': '网易云',
+        'k': '哲学',
+        'l': '抖机灵'
+      };
 
-    const typeText = typeMap[type] || '未知';
+      const typeText = typeMap[type] || '未知';
 
-    console.log('获取到的一言:', hitokoto);
-    console.log('来源:', from);
-    console.log('类型:', typeText);
+      console.log('获取到的一言:', hitokoto);
+      console.log('来源:', from);
+      console.log('类型:', typeText);
 
-    return {
-      success: true,
-      hitokoto: hitokoto,
-      from: from,
-      type: typeText
-    };
-  } catch (error) {
-    console.error('获取一言失败:', error.message);
-    throw new Error(`获取一言失败: ${error.message}`);
-  }
+      return {
+        success: true,
+        hitokoto: hitokoto,
+        from: from,
+        type: typeText
+      };
+    } catch (error) {
+      console.error('获取一言失败:', error.message);
+      throw new Error(`获取一言失败: ${error.message}`);
+    }
+  });
 }
 
 // 获取随机运势
@@ -1328,24 +1392,28 @@ async function getMoyuDaily() {
   }
 }
 
-// 通用API获取函数
-async function fetchApi(url, name) {
-  try {
-    console.log(`正在获取${name}...`);
-    const response = await axios.get(url, {
-      params: { encoding: 'json' },
-      timeout: 10000
-    });
-    if (response.data.code === 200) {
-      return { success: true, data: response.data.data };
-    } else {
-      // 部分接口可能直接返回数组或对象，视具体情况而定，但这里假设遵循标准结构
-      return { success: true, data: response.data.data };
+// 通用API获取函数 - 优化版
+async function fetchApi(url, name, params = { encoding: 'json' }) {
+  return apiQueue.enqueue(url, async () => {
+    try {
+      console.log(`正在获取${name}...`);
+      const response = await axiosWithRetry({
+        method: 'get',
+        url: url,
+        params: params,
+        timeout: 10000
+      });
+      
+      if (response.data.code === 200) {
+        return { success: true, data: response.data.data };
+      } else {
+        return { success: true, data: response.data.data };
+      }
+    } catch (error) {
+      console.error(`获取${name}失败:`, error.message);
+      return { success: false, error: error.message };
     }
-  } catch (error) {
-    console.error(`获取${name}失败:`, error.message);
-    return { success: false, error: error.message };
-  }
+  });
 }
 
 async function getRedNoteHot() { return fetchApi(CONFIG.REDNOTE_API, '小红书热点'); }
@@ -2012,7 +2080,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     html += buildWeatherCarousel(weatherData, forecastData, timeInfo);
   }
 
-  // 60秒读懂世界 - 科技感终端风格
+  // 60秒读懂世界 - 科技感终端风格（优化跑马灯）
   if (CONFIG.SHOW_MODULES.NEWS_60S && news60sData && news60sData.success && news60sData.data && Array.isArray(news60sData.data.news)) {
     const n = news60sData.data;
     // 生成新闻列表HTML
@@ -2041,10 +2109,6 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
           <div class="n60-scroll">
             ${newsItemsHtml}
-            <!-- 重复一份以实现无缝滚动 -->
-            <div class="n60-dup">
-              ${newsItemsHtml}
-            </div>
           </div>
         </div>
 
@@ -2063,19 +2127,62 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
           .n60-dot { width: 8px; height: 8px; background: #10b981; border-radius: 50%; box-shadow: 0 0 8px #10b981; }
           .n60-tt { color: #10b981; font-weight: bold; font-family: monospace; letter-spacing: 1px; font-size: 13px; }
           .n60-date { color: #64748b; font-size: 10px; font-family: monospace; }
-          .n60-cnt { height: 300px; overflow: hidden; position: relative; padding: 15px; }
-          .n60-scan { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.05) 50%, transparent); background-size: 100% 4px; pointer-events: none; z-index: 2; }
-          .n60-scroll { animation: scrollUp 45s linear infinite; font-size: 13px; }
-          .n60-dup { margin-top: 20px; border-top: 1px dashed rgba(16, 185, 129, 0.3); padding-top: 20px; }
+          .n60-cnt { 
+            height: 300px; 
+            overflow: hidden; 
+            position: relative; 
+            padding: 15px;
+            /* 添加遮罩渐变，隐藏顶部和底部的内容切换 */
+            mask: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+            -webkit-mask: linear-gradient(to bottom, transparent 0%, black 10%, black 90%, transparent 100%);
+          }
+          .n60-scan { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: linear-gradient(to bottom, transparent, rgba(16, 185, 129, 0.05) 50%, transparent); 
+            background-size: 100% 4px; 
+            pointer-events: none; 
+            z-index: 2; 
+          }
+          .n60-scroll { 
+            /* 优化动画：使用 transform3d 开启硬件加速，添加缓动函数 */
+            animation: scrollUpSmooth 60s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite;
+            font-size: 13px;
+            /* 确保内容足够高以支持平滑滚动 */
+            padding-bottom: 300px;
+          }
           .n60-ft { padding: 8px 15px; border-top: 1px solid rgba(16, 185, 129, 0.2); background: rgba(15, 23, 42, 0.8); font-family: monospace; font-size: 10px; color: #10b981; }
           .n60-blk { animation: blink 1s step-end infinite; }
-          @keyframes scrollUp {
-            0% { transform: translateY(0); }
-            100% { transform: translateY(-50%); }
+          
+          /* 优化的滚动动画 - 使用 transform3d 和更平滑的过渡 */
+          @keyframes scrollUpSmooth {
+            0% { 
+              transform: translate3d(0, 0, 0); 
+            }
+            95% { 
+              transform: translate3d(0, -100%, 0); 
+            }
+            95.1% {
+              /* 瞬间重置到底部，但由于遮罩效果，用户看不到 */
+              transform: translate3d(0, 100%, 0);
+            }
+            100% { 
+              transform: translate3d(0, 0, 0); 
+            }
           }
+          
           @keyframes blink {
             0%, 100% { opacity: 1; }
             50% { opacity: 0; }
+          }
+          
+          /* 响应式优化 */
+          @media (max-width: 480px) {
+            .n60-cnt { height: 250px; }
+            .n60-scroll { font-size: 12px; }
           }
         </style>
       </div>

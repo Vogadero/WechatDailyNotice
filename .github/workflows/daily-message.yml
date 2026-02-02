@@ -34,7 +34,8 @@ jobs:
 
     - name: Install dependencies
       run: |
-        npm install axios jose
+        # 使用 npm 安装依赖（统一包管理器）
+        npm ci
         npm install -g json
 
     # 环境变量测试步骤
