@@ -59,7 +59,7 @@ const CONFIG = {
         FUEL: false,         // 汽油价格
         MOYU: false,         // 摸鱼日报
         AI_NEWS: false,      // AI 资讯
-        NEWS_60S: true,     // 60秒读懂世界
+        NEWS_60S: false,     // 60秒读懂世界
         HOT_LIST: {
             DOUYIN: false,    // 抖音
             BILI: false,      // B站
