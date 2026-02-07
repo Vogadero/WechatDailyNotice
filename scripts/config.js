@@ -52,13 +52,13 @@ const CONFIG = {
 
     // 模块开关配置：控制哪些内容包含在推送中 (true开启, false关闭)
     SHOW_MODULES: {
-        WEATHER: true,      // 天气（含预警、降水、轮播）
-        HISTORY: false,      // 历史上的今天
-        GOLD: false,         // 黄金价格
-        EXCHANGE: false,     // 汇率
-        FUEL: false,         // 汽油价格
-        MOYU: false,         // 摸鱼日报
-        AI_NEWS: false,      // AI 资讯
+        WEATHER: false,      // 天气（含预警、降水、轮播）
+        HISTORY: true,      // 历史上的今天
+        GOLD: true,         // 黄金价格
+        EXCHANGE: true,     // 汇率
+        FUEL: true,         // 汽油价格
+        MOYU: true,         // 摸鱼日报
+        AI_NEWS: true,      // AI 资讯
         NEWS_60S: false,     // 60秒读懂世界
         HOT_LIST: {
             DOUYIN: false,    // 抖音
