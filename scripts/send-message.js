@@ -45,11 +45,24 @@ async function axiosWithRetry(config, maxRetries = 3, baseDelay = 1000) {
   }
 }
 
+// 安全的 Promise 包装器，确保所有异步操作都能正确完成
+async function safeAsyncCall(asyncFn, name, timeout = 15000) {
+  return Promise.race([
+    asyncFn(),
+    new Promise((_, reject) => 
+      setTimeout(() => reject(new Error(`${name} 超时 (${timeout}ms)`)), timeout)
+    )
+  ]).catch(error => {
+    console.error(`${name} 执行失败:`, error.message);
+    return { success: false, error: error.message };
+  });
+}
+
 // API 调用队列管理
 class ApiQueue {
   constructor() {
     this.domainQueues = new Map();
-    this.defaultDelay = 500; // 默认延迟 500ms
+    this.defaultDelay = 800; // 增加默认延迟到 800ms，避免请求过快
   }
 
   // 根据域名分组延迟调用
@@ -65,6 +78,9 @@ class ApiQueue {
     const newQueue = queue.then(async () => {
       await delay(this.defaultDelay);
       return requestFn();
+    }).catch(error => {
+      console.error(`队列执行失败 [${domain}]:`, error.message);
+      throw error;
     });
     
     this.domainQueues.set(domain, newQueue);
@@ -2652,7 +2668,10 @@ async function main() {
         return condition ? promise : Promise.resolve({ success: false, skipped: true });
     };
 
-    // 3. 并行获取数据（提高效率）
+    // 3. 并行获取数据（提高效率，使用安全包装器和超时控制）
+    console.log('开始并行获取所有数据...');
+    const startTime = Date.now();
+    
     const [
       weatherResult,
       forecastResult,
@@ -2681,33 +2700,36 @@ async function main() {
       biliResult,
       baiduTiebaResult
     ] = await Promise.allSettled([
-      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getCurrentWeather()),
-      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherForecast()),
-      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getMinutePrecipitation(token)),
-      fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherAlerts(token)),
-      fetchIf(CONFIG.SHOW_MODULES.LUCK, getLuck()),
-      fetchIf(CONFIG.SHOW_MODULES.HISTORY, getHistoryToday()),
-      fetchIf(CONFIG.SHOW_MODULES.EXCHANGE, getExchangeRate()),
-      fetchIf(CONFIG.SHOW_MODULES.GOLD, getGoldPrice()),
-      fetchIf(CONFIG.SHOW_MODULES.GOLD, getSilverData()),
-      fetchIf(CONFIG.SHOW_MODULES.FUEL, getFuelPrice()),
-      fetchIf(CONFIG.SHOW_MODULES.MOYU, getMoyuDaily()),
-      fetchIf(CONFIG.SHOW_MODULES.AI_NEWS, getAiNews()),
-      fetchIf(CONFIG.SHOW_MODULES.NEWS_60S, get60sNews()),
-      fetchIf(CONFIG.SHOW_MODULES.BING_WALLPAPER, getBingWallpaper()),
-      fetchIf(CONFIG.SHOW_MODULES.KFC, getKfcContent(timeInfo.isThursday)),
-      fetchIf(CONFIG.SHOW_MODULES.yiYan, getHitokoto()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.REDNOTE, getRedNoteHot()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEIBO, getWeiboHot()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TOUTIAO, getToutiaoHot()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.ZHIHU, getZhihuHot()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.MOVIE, getMaoyanMovie()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TV, getMaoyanTv()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEB, getMaoyanWeb()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.DOUYIN, getDouyinHot()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.BILI, getBiliHot()),
-      fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TIEBA, getBaiduTieba())
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getCurrentWeather()), '实时天气', 15000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherForecast()), '天气预报', 15000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getMinutePrecipitation(token)), '分钟级降水', 15000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherAlerts(token)), '天气预警', 15000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.LUCK, getLuck()), '今日运势', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HISTORY, getHistoryToday()), '历史上的今天', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.EXCHANGE, getExchangeRate()), '汇率信息', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.GOLD, getGoldPrice()), '黄金价格', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.GOLD, getSilverData()), '白银数据', 15000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.FUEL, getFuelPrice()), '汽油价格', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.MOYU, getMoyuDaily()), '摸鱼日报', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.AI_NEWS, getAiNews()), 'AI资讯', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.NEWS_60S, get60sNews()), '60秒读懂世界', 18000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.BING_WALLPAPER, getBingWallpaper()), 'Bing壁纸', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.KFC, getKfcContent(timeInfo.isThursday)), 'KFC文案', 10000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.yiYan, getHitokoto()), '一言', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.REDNOTE, getRedNoteHot()), '小红书热点', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEIBO, getWeiboHot()), '微博热搜', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TOUTIAO, getToutiaoHot()), '头条热搜', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.ZHIHU, getZhihuHot()), '知乎热榜', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.MOVIE, getMaoyanMovie()), '猫眼电影', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TV, getMaoyanTv()), '猫眼电视', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEB, getMaoyanWeb()), '猫眼网剧', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.DOUYIN, getDouyinHot()), '抖音热搜', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.BILI, getBiliHot()), 'B站热搜', 12000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TIEBA, getBaiduTieba()), '百度贴吧', 12000)
     ]);
+    
+    const endTime = Date.now();
+    console.log(`所有数据获取完成，总耗时: ${((endTime - startTime) / 1000).toFixed(2)}秒`);
 
     const weatherData = weatherResult.status === 'fulfilled' ? weatherResult.value : { success: false, error: weatherResult.reason };
     const forecastData = forecastResult.status === 'fulfilled' ? forecastResult.value : { success: false, error: forecastResult.reason };
@@ -2738,6 +2760,49 @@ async function main() {
         bili: biliResult.status === 'fulfilled' ? biliResult.value : { success: false },
         baiduTieba: baiduTiebaResult.status === 'fulfilled' ? baiduTiebaResult.value : { success: false }
     };
+
+    // 打印数据获取统计
+    const successCount = [
+      weatherData, forecastData, precipitationData, luckData, historyData, 
+      rateData, goldData, silverData, fuelData, moyuData, aiNewsData, 
+      news60sData, bingData, kfcContent, hitokotoData,
+      ...Object.values(hotData)
+    ].filter(d => d && d.success).length;
+    
+    const totalCount = 26;
+    console.log(`数据获取统计: ${successCount}/${totalCount} 成功`);
+    
+    // 打印失败的接口
+    const failedApis = [];
+    if (!weatherData.success) failedApis.push('实时天气');
+    if (!forecastData.success) failedApis.push('天气预报');
+    if (!precipitationData.success) failedApis.push('分钟级降水');
+    if (!luckData.success) failedApis.push('今日运势');
+    if (!historyData.success) failedApis.push('历史上的今天');
+    if (!rateData.success) failedApis.push('汇率信息');
+    if (!goldData.success) failedApis.push('黄金价格');
+    if (!silverData.success) failedApis.push('白银数据');
+    if (!fuelData.success) failedApis.push('汽油价格');
+    if (!moyuData.success) failedApis.push('摸鱼日报');
+    if (!aiNewsData.success) failedApis.push('AI资讯');
+    if (!news60sData.success) failedApis.push('60秒读懂世界');
+    if (!bingData.success) failedApis.push('Bing壁纸');
+    if (!kfcContent.success && timeInfo.isThursday) failedApis.push('KFC文案');
+    if (!hitokotoData) failedApis.push('一言');
+    if (!hotData.rednote.success) failedApis.push('小红书热点');
+    if (!hotData.weibo.success) failedApis.push('微博热搜');
+    if (!hotData.toutiao.success) failedApis.push('头条热搜');
+    if (!hotData.zhihu.success) failedApis.push('知乎热榜');
+    if (!hotData.maoyanMovie.success) failedApis.push('猫眼电影');
+    if (!hotData.maoyanTv.success) failedApis.push('猫眼电视');
+    if (!hotData.maoyanWeb.success) failedApis.push('猫眼网剧');
+    if (!hotData.douyin.success) failedApis.push('抖音热搜');
+    if (!hotData.bili.success) failedApis.push('B站热搜');
+    if (!hotData.baiduTieba.success) failedApis.push('百度贴吧');
+    
+    if (failedApis.length > 0) {
+      console.warn(`⚠️  以下接口获取失败: ${failedApis.join(', ')}`);
+    }
 
     // 4. 检查关键数据
     if (!hitokotoData) {
