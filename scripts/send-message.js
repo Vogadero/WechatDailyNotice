@@ -2633,7 +2633,7 @@ async function main() {
       for (const subKey in CONFIG.SHOW_MODULES.HOT_LIST) {
          CONFIG.SHOW_MODULES.HOT_LIST[subKey] = true;
       }
-      CONFIG.SHOW_MODULES.QR_CODE = true;
+      CONFIG.SHOW_MODULES.QR_CODE = false;
     }
   }
 
