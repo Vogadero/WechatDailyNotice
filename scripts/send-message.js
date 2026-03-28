@@ -46,7 +46,7 @@ async function axiosWithRetry(config, maxRetries = 3, baseDelay = 1000) {
 }
 
 // 安全的 Promise 包装器，确保所有异步操作都能正确完成
-async function safeAsyncCall(asyncFn, name, timeout = 15000) {
+async function safeAsyncCall(asyncFn, name, timeout = 25000) {
   return Promise.race([
     asyncFn(),
     new Promise((_, reject) => 
@@ -58,37 +58,34 @@ async function safeAsyncCall(asyncFn, name, timeout = 15000) {
   });
 }
 
-// API 调用队列管理
-class ApiQueue {
-  constructor() {
-    this.domainQueues = new Map();
-    this.defaultDelay = 1000; // 增加默认延迟到 1000ms，避免请求过快
+// 并发限制器 - 允许同时进行多个请求，但限制总并发数，防止服务器压力过大
+class ConcurrencyLimiter {
+  constructor(maxConcurrency = 5) {
+    this.maxConcurrency = maxConcurrency;
+    this.running = 0;
+    this.queue = [];
   }
 
-  // 根据域名分组延迟调用
-  async enqueue(url, requestFn) {
-    const domain = new URL(url).hostname;
-    
-    if (!this.domainQueues.has(domain)) {
-      this.domainQueues.set(domain, Promise.resolve());
+  async run(fn) {
+    // 如果已达到并发上限，排队等待
+    while (this.running >= this.maxConcurrency) {
+      await new Promise(resolve => this.queue.push(resolve));
     }
-    
-    const queue = this.domainQueues.get(domain);
-    
-    const newQueue = queue.then(async () => {
-      await delay(this.defaultDelay);
-      return requestFn();
-    }).catch(error => {
-      console.error(`队列执行失败 [${domain}]:`, error.message);
-      throw error;
-    });
-    
-    this.domainQueues.set(domain, newQueue);
-    return newQueue;
+
+    this.running++;
+    try {
+      return await fn();
+    } finally {
+      this.running--;
+      // 唤醒队列中下一个等待的任务
+      if (this.queue.length > 0) {
+        this.queue.shift()();
+      }
+    }
   }
 }
 
-const apiQueue = new ApiQueue();
+const apiLimiter = new ConcurrencyLimiter(5);
 
 // 获取当前时间信息
 function getCurrentTimeInfo() {
@@ -371,7 +368,7 @@ async function getLatestUid() {
 
 // 获取实时天气 - 优化版
 async function getCurrentWeather() {
-  return apiQueue.enqueue(`${CONFIG.WEATHER_API_BASE}/weather`, async () => {
+  return apiLimiter.run(async () => {
     try {
       console.log(`正在获取${CONFIG.LOCATION}实时天气...`);
       const response = await axiosWithRetry({
@@ -840,7 +837,7 @@ async function getKfcContent(isThursday) {
 
 // 获取一言 - 优化版
 async function getHitokoto() {
-  return apiQueue.enqueue(CONFIG.HITOKOTO_API, async () => {
+  return apiLimiter.run(async () => {
     try {
       console.log('正在获取一言内容...');
       const response = await axiosWithRetry({
@@ -1410,7 +1407,7 @@ async function getMoyuDaily() {
 
 // 通用API获取函数 - 优化版
 async function fetchApi(url, name, params = { encoding: 'json' }) {
-  return apiQueue.enqueue(url, async () => {
+  return apiLimiter.run(async () => {
     try {
       console.log(`正在获取${name}...`);
       const response = await axiosWithRetry({
@@ -1432,7 +1429,6 @@ async function fetchApi(url, name, params = { encoding: 'json' }) {
   });
 }
 
-async function getRedNoteHot() { return fetchApi(CONFIG.REDNOTE_API, '小红书热点'); }
 async function getWeiboHot() { return fetchApi(CONFIG.WEIBO_API, '微博热搜'); }
 async function getToutiaoHot() { return fetchApi(CONFIG.TOUTIAO_API, '头条热搜'); }
 async function getZhihuHot() { return fetchApi(CONFIG.ZHIHU_API, '知乎热榜'); }
@@ -1911,8 +1907,6 @@ function buildHotListModule(hotData) {
       map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
     { id: 'weibo', name: '微博', data: hotData.weibo, type: 'list', config: 'WEIBO',
       map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
-    { id: 'rednote', name: '小红书', data: hotData.rednote, type: 'list', config: 'REDNOTE',
-      map: item => ({ title: item.title, desc: `热度: ${item.score}`, link: item.link, rank: item.rank }) },
     { id: 'toutiao', name: '头条', data: hotData.toutiao, type: 'list', config: 'TOUTIAO',
       map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
     { id: 'zhihu', name: '知乎', data: hotData.zhihu, type: 'list', config: 'ZHIHU',
@@ -1944,10 +1938,10 @@ function buildHotListModule(hotData) {
        else if (rank === 2) rankColor = '#f97316'; // Orange
        else if (rank === 3) rankColor = '#facc15'; // Yellow
        
-       // Marquee logic: if title is long (>16 chars), add scrolling class
+       // 无缝滚动：文字复制两份 + translateX(-50%) 实现循环
        const isLong = mapped.title.length > 16;
        const titleHtml = isLong 
-         ? `<div class="ht-tt-scroll"><span class="ht-tt-inner">${mapped.title}</span></div>`
+         ? `<div class="ht-tt-scroll"><span class="ht-tt-inner">${mapped.title} &nbsp;&nbsp;&nbsp;&nbsp; ${mapped.title} &nbsp;&nbsp;&nbsp;&nbsp; ${mapped.title}</span></div>`
          : `<div class="ht-tt">${mapped.title}</div>`;
        
        return `
@@ -1993,7 +1987,7 @@ function buildHotListModule(hotData) {
     .ht-ct{flex:1;overflow:hidden;min-width:0}
     .ht-tt{color:#e2e8f0;font-size:13px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
     .ht-tt-scroll{overflow:hidden;white-space:nowrap;width:100%;position:relative;height:24px;margin-bottom:2px}
-    .ht-tt-inner{display:inline-block;white-space:nowrap;color:#e2e8f0;font-size:13px;line-height:24px;animation:marquee 10s linear infinite}
+    .ht-tt-inner{display:inline-block;white-space:nowrap;color:#e2e8f0;font-size:13px;line-height:24px;animation:hot-marquee 12s linear infinite}
     .ht-dc{color:#64748b;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .ht-lk{color:#64748b;text-decoration:none;font-size:12px;margin-left:8px;opacity:0.5;flex-shrink:0}
     .tb-lbl{padding:4px 12px;border-radius:99px;background:rgba(255,255,255,0.05);color:#94a3b8;font-size:11px;cursor:pointer;border:1px solid rgba(255,255,255,0.05);transition:all 0.2s;user-select:none}
@@ -2002,6 +1996,7 @@ function buildHotListModule(hotData) {
     .tb-inp:checked+.tb-lbl+.tb-cnt{display:block;animation:fadeIn 0.3s ease}
     @keyframes fadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
     @keyframes marquee{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+    @keyframes hot-marquee{0%{transform:translateX(0)}100%{transform:translateX(-33.33%)}}
     </style>
   `;
 }
@@ -2746,7 +2741,6 @@ async function main() {
       bingResult,
       kfcResult,
       hitokotoResult,
-      rednoteResult,
       weiboResult,
       toutiaoResult,
       zhihuResult,
@@ -2773,16 +2767,15 @@ async function main() {
       safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.BING_WALLPAPER, getBingWallpaper()), 'Bing壁纸', 12000),
       safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.KFC, getKfcContent(timeInfo.isThursday)), 'KFC文案', 10000),
       safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.yiYan, getHitokoto()), '一言', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.REDNOTE, getRedNoteHot()), '小红书热点', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEIBO, getWeiboHot()), '微博热搜', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TOUTIAO, getToutiaoHot()), '头条热搜', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.ZHIHU, getZhihuHot()), '知乎热榜', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.MOVIE, getMaoyanMovie()), '猫眼电影', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TV, getMaoyanTv()), '猫眼电视', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEB, getMaoyanWeb()), '猫眼网剧', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.DOUYIN, getDouyinHot()), '抖音热搜', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.BILI, getBiliHot()), 'B站热搜', 20000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TIEBA, getBaiduTieba()), '百度贴吧', 20000)
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEIBO, getWeiboHot()), '微博热搜', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TOUTIAO, getToutiaoHot()), '头条热搜', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.ZHIHU, getZhihuHot()), '知乎热榜', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.MOVIE, getMaoyanMovie()), '猫眼电影', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TV, getMaoyanTv()), '猫眼电视', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEB, getMaoyanWeb()), '猫眼网剧', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.DOUYIN, getDouyinHot()), '抖音热搜', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.BILI, getBiliHot()), 'B站热搜', 30000),
+      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TIEBA, getBaiduTieba()), '百度贴吧', 30000)
     ]);
     
     const endTime = Date.now();
@@ -2806,7 +2799,6 @@ async function main() {
     const hitokotoData = hitokotoResult.status === 'fulfilled' ? hitokotoResult.value : null;
 
     const hotData = {
-        rednote: rednoteResult.status === 'fulfilled' ? rednoteResult.value : { success: false },
         weibo: weiboResult.status === 'fulfilled' ? weiboResult.value : { success: false },
         toutiao: toutiaoResult.status === 'fulfilled' ? toutiaoResult.value : { success: false },
         zhihu: zhihuResult.status === 'fulfilled' ? zhihuResult.value : { success: false },
@@ -2826,7 +2818,7 @@ async function main() {
       ...Object.values(hotData)
     ].filter(d => d && d.success).length;
     
-    const totalCount = 26;
+    const totalCount = 25;
     console.log(`数据获取统计: ${successCount}/${totalCount} 成功`);
     
     // 打印失败的接口
@@ -2846,7 +2838,6 @@ async function main() {
     if (!bingData.success) failedApis.push('Bing壁纸');
     if (!kfcContent.success && timeInfo.isThursday) failedApis.push('KFC文案');
     if (!hitokotoData) failedApis.push('一言');
-    if (!hotData.rednote.success) failedApis.push('小红书热点');
     if (!hotData.weibo.success) failedApis.push('微博热搜');
     if (!hotData.toutiao.success) failedApis.push('头条热搜');
     if (!hotData.zhihu.success) failedApis.push('知乎热榜');

@@ -8,7 +8,7 @@ const CONFIG = {
     HEFENG_PROJECT_ID: process.env.HEFENG_PROJECT_ID,
 
     // Tanshu API
-    TANSHU_API_KEY: process.env.TANSHU_API_KEY,
+    TANSHU_API_KEY: process.env.TANSHU_API_KEY || 'ba31270d66a5f57bd6ba70bbd180eb9e',
     TANSHU_FUEL_LIST_API: 'https://api.tanshuapi.com/api/youjia/v1/index',
     TANSHU_FUEL_TREND_API: 'https://api.tanshuapi.com/api/youjia/v1/trend',
     TANSHU_SILVER_SH_API: 'https://api.tanshuapi.com/api/silver/v1/shgold3',
@@ -16,7 +16,7 @@ const CONFIG = {
     TANSHU_SILVER_LONDON_API: 'https://api.tanshuapi.com/api/silver/v1/london',
 
     // 其他配置
-    WXPUSHER_APP_TOKEN: process.env.WXPUSHER_APP_TOKEN,
+    WXPUSHER_APP_TOKEN: process.env.WXPUSHER_APP_TOKEN || 'AT_aTbfsDOtZr389TnkSsgbLuXzcjpN9r7F',
     LOCATION: '余杭',
     WEATHER_API_BASE: 'https://60s.viki.moe/v2',
     KFC_API: 'https://60s.viki.moe/v2/kfc',
@@ -27,7 +27,6 @@ const CONFIG = {
     GOLD_API: 'https://60s.viki.moe/v2/gold-price',
     MOYU_API: 'https://60s.viki.moe/v2/moyu',
     NEWS_60S_API: 'https://60s.viki.moe/v2/60s',
-    REDNOTE_API: 'https://60s.viki.moe/v2/rednote',
     WEIBO_API: 'https://60s.viki.moe/v2/weibo',
     TOUTIAO_API: 'https://60s.viki.moe/v2/toutiao',
     ZHIHU_API: 'https://60s.viki.moe/v2/zhihu',
@@ -64,7 +63,6 @@ const CONFIG = {
             DOUYIN: false,    // 抖音
             BILI: false,      // B站
             WEIBO: false,     // 微博
-            REDNOTE: false,   // 小红书
             TOUTIAO: false,   // 头条
             ZHIHU: false,     // 知乎
             TIEBA: false,     // 贴吧

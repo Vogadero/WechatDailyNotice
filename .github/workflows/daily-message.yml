@@ -60,6 +60,14 @@ jobs:
           echo "❌ WXPUSHER_APP_TOKEN: 未设置"
           all_set=false
         fi
+
+        if [ -n "$TANSHU_API_KEY" ]; then
+          echo "✅ TANSHU_API_KEY: 已设置"
+          echo "   值: $TANSHU_API_KEY"
+        else
+          echo "❌ TANSHU_API_KEY: 未设置"
+          all_set=false
+        fi
         
         if [ -n "$HEFENG_API_HOST" ]; then
           echo "✅ HEFENG_API_HOST: 已设置"
@@ -108,6 +116,7 @@ jobs:
         HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
         HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
         HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
+        TANSHU_API_KEY: ${{ secrets.TANSHU_API_KEY }}
         # 判断是否是定时触发
         IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
       run: |
@@ -119,6 +128,7 @@ jobs:
         echo "HEFENG_PROJECT_ID: $HEFENG_PROJECT_ID"
         echo "HEFENG_PRIVATE_KEY 长度: ${#HEFENG_PRIVATE_KEY}"
         echo "IS_SCHEDULED: $IS_SCHEDULED"
+        echo "TANSHU_API_KEY: $TANSHU_API_KEY"
         
         # 运行脚本
         node scripts/send-message.js $IS_SCHEDULED
