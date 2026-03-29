@@ -8,7 +8,7 @@ const CONFIG = {
     HEFENG_PROJECT_ID: process.env.HEFENG_PROJECT_ID,
 
     // Tanshu API
-    TANSHU_API_KEY: process.env.TANSHU_API_KEY || 'ba31270d66a5f57bd6ba70bbd180eb9e',
+    TANSHU_API_KEY: process.env.TANSHU_API_KEY,
     TANSHU_FUEL_LIST_API: 'https://api.tanshuapi.com/api/youjia/v1/index',
     TANSHU_FUEL_TREND_API: 'https://api.tanshuapi.com/api/youjia/v1/trend',
     TANSHU_SILVER_SH_API: 'https://api.tanshuapi.com/api/silver/v1/shgold3',
@@ -16,7 +16,7 @@ const CONFIG = {
     TANSHU_SILVER_LONDON_API: 'https://api.tanshuapi.com/api/silver/v1/london',
 
     // 其他配置
-    WXPUSHER_APP_TOKEN: process.env.WXPUSHER_APP_TOKEN || 'AT_aTbfsDOtZr389TnkSsgbLuXzcjpN9r7F',
+    WXPUSHER_APP_TOKEN: process.env.WXPUSHER_APP_TOKEN,
     LOCATION: '余杭',
     WEATHER_API_BASE: 'https://60s.viki.moe/v2',
     KFC_API: 'https://60s.viki.moe/v2/kfc',
