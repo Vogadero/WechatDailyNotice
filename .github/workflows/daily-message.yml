@@ -22,9 +22,9 @@ jobs:
     
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
-        token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        token: ${{ secrets.GITHUB_TOKEN }}
         fetch-depth: 0
 
     - name: Setup Node.js
@@ -137,39 +137,39 @@ jobs:
     - name: Commit and push data files
       if: always()
       env:
-        PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         echo "📦 检查 data 文件夹是否有变更..."
         
         # 检查是否有文件变更
         if git status --porcelain data/ | grep -q .; then
-          echo "🔄 检测到 data 文件夹有变更，提交到 Git..."
-          
-          # 配置 Git 用户信息
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          
-          # 设置远程 URL 使用 token
-          git remote set-url origin https://x-access-token:${{ secrets.PERSONAL_ACCESS_TOKEN }}@github.com/${{ github.repository }}
-          
+          echo "🔄 检测到 data 文件夹有变更，准备提交..."
+
+          # 配置 Git 用户信息（使用 GitHub Actions 机器人）
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 拉取远程最新更改，避免推送冲突
+          echo "⬇️ 拉取远程最新代码..."
+          git pull --rebase origin ${{ github.ref_name }} || echo "拉取失败或无新提交"
+
           # 添加变更的文件
           git add data/
-          
+
           # 创建提交信息
           if [ "${{ github.event_name }}" = "schedule" ]; then
             COMMIT_MSG="chore: update data files [自动定时更新]"
           else
             COMMIT_MSG="chore: update data files [手动触发更新]"
           fi
-          
+
           # 提交
           git commit -m "$COMMIT_MSG" || echo "提交失败或无变更"
-          
+
           # 推送
           echo "🚀 推送变更到仓库..."
-          git push origin HEAD:${{ github.ref }} || echo "推送失败"
-          
-          echo "✅ data 文件夹变更尝试提交完成"
+          git push origin HEAD:${{ github.ref_name }}
+          echo "✅ 推送完成"
         else
           echo "✅ data 文件夹无变更，无需提交"
         fi
