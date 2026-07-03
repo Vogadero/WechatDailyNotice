@@ -5,7 +5,11 @@
   "main": "scripts/send-message.js",
   "scripts": {
     "send": "node scripts/send-message.js",
-    "test": "node scripts/send-message.js false"
+    "preview": "node scripts/send-message.js false --dry-run",
+    "preview:morning": "node scripts/send-message.js true --dry-run --run-mode=morning",
+    "preview:midday": "node scripts/send-message.js true --dry-run --run-mode=midday",
+    "preview:evening": "node scripts/send-message.js true --dry-run --run-mode=evening",
+    "test": "node --check scripts/send-message.js && node --check scripts/generate-token.js"
   },
   "dependencies": {
     "axios": "^1.6.0",

@@ -3,18 +3,38 @@ name: Daily Message Sender
 
 on:
   schedule:
-    # 每天北京时间7:30运行 (UTC 23:15) - 避开整点高峰
+    # 每天北京时间07:15运行 (UTC 23:15，前一日) - 避开整点高峰
     - cron: '15 23 * * *'
-    # 每天北京时间11:00运行 (UTC 01:00) - 延时任务1
-    - cron: '0 1 * * *'
-    # 每天北京时间17:00运行 (UTC 08:20) - 延时任务2
+    # 每天北京时间10:30运行 (UTC 02:30) - 午间任务
+    - cron: '30 2 * * *'
+    # 每天北京时间16:20运行 (UTC 08:20) - 延时任务2
     - cron: '20 8 * * *'
   # 允许手动触发
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只生成预览，不发送 WxPusher（建议保持 true，确认后再改 false 真实发送）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      run_mode:
+        description: '手动触发时指定推送模式（auto 按当前北京时间判断）'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - 'auto'
+          - 'morning'
+          - 'midday'
+          - 'evening'
 
 jobs:
   send-message:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write  # 需要这个权限来推送更改
       actions: read
@@ -28,7 +48,7 @@ jobs:
         fetch-depth: 0
 
     - name: Setup Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: '24'
 
@@ -36,74 +56,62 @@ jobs:
       run: |
         # 使用 npm 安装依赖（统一包管理器）
         npm ci
-        npm install -g json
 
     # 环境变量测试步骤
     - name: Test environment variables
       env:
         WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+        WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
         HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
         HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
         HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
         HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
         TANSHU_API_KEY: ${{ secrets.TANSHU_API_KEY }}
+        DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
       run: |
         echo "=== 测试环境变量 ==="
+        echo "DRY_RUN: $DRY_RUN"
         echo ""
-        
-        # 检查环境变量是否设置
-        all_set=true
-        
+
+        # 检查环境变量是否设置。dry-run 只生成预览，不强制要求发送/天气/探数密钥。
+        if [ "$DRY_RUN" = "true" ]; then
+          echo "🧪 dry-run 模式，跳过强制密钥检查"
+          exit 0
+        fi
+
+        required_set=true
+
         if [ -n "$WXPUSHER_APP_TOKEN" ]; then
           echo "✅ WXPUSHER_APP_TOKEN: 已设置"
         else
           echo "❌ WXPUSHER_APP_TOKEN: 未设置"
-          all_set=false
+          required_set=false
         fi
 
+        if [ -n "$WXPUSHER_UID" ]; then
+          echo "✅ WXPUSHER_UID: 已设置"
+        else
+          echo "ℹ️ WXPUSHER_UID: 未设置，将尝试从 UID API 获取"
+        fi
+
+        # 下面的密钥仅供可选模块使用：缺失时由脚本降级/跳过对应模块，不在预检查阶段阻断。
         if [ -n "$TANSHU_API_KEY" ]; then
           echo "✅ TANSHU_API_KEY: 已设置"
-          echo "   值: $TANSHU_API_KEY"
         else
-          echo "❌ TANSHU_API_KEY: 未设置"
-          all_set=false
+          echo "⚠️ TANSHU_API_KEY: 未设置，探数相关模块可能跳过或失败"
         fi
-        
-        if [ -n "$HEFENG_API_HOST" ]; then
-          echo "✅ HEFENG_API_HOST: 已设置"
-          echo "   值: $HEFENG_API_HOST"
+
+        if [ -n "$HEFENG_API_HOST" ] && [ -n "$HEFENG_KEY_ID" ] && [ -n "$HEFENG_PROJECT_ID" ] && [ -n "$HEFENG_PRIVATE_KEY" ]; then
+          echo "✅ HEFENG_*: 已设置"
         else
-          echo "❌ HEFENG_API_HOST: 未设置"
-          all_set=false
+          echo "⚠️ HEFENG_*: 未完整设置，分钟级降水和天气预警将跳过"
         fi
-        
-        if [ -n "$HEFENG_KEY_ID" ]; then
-          echo "✅ HEFENG_KEY_ID: 已设置"
-        else
-          echo "❌ HEFENG_KEY_ID: 未设置"
-          all_set=false
-        fi
-        
-        if [ -n "$HEFENG_PROJECT_ID" ]; then
-          echo "✅ HEFENG_PROJECT_ID: 已设置"
-        else
-          echo "❌ HEFENG_PROJECT_ID: 未设置"
-          all_set=false
-        fi
-        
-        if [ -n "$HEFENG_PRIVATE_KEY" ]; then
-          echo "✅ HEFENG_PRIVATE_KEY: 已设置"
-          echo "   长度: ${#HEFENG_PRIVATE_KEY}"
-        else
-          echo "❌ HEFENG_PRIVATE_KEY: 未设置"
-          all_set=false
-        fi
-        
+
         echo ""
-        if [ "$all_set" = true ]; then
-          echo "✅ 所有环境变量都已设置"
+        if [ "$required_set" = true ]; then
+          echo "✅ 必需环境变量已设置"
         else
-          echo "❌ 部分环境变量未设置"
+          echo "❌ 必需环境变量未设置"
           echo "请检查 GitHub Secrets 是否已正确设置"
           exit 1
         fi
@@ -112,37 +120,51 @@ jobs:
       env:
         # 在这里传递所有必需的环境变量
         WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN }}
+        WXPUSHER_UID: ${{ secrets.WXPUSHER_UID }}
         HEFENG_API_HOST: ${{ secrets.HEFENG_API_HOST }}
         HEFENG_KEY_ID: ${{ secrets.HEFENG_KEY_ID }}
         HEFENG_PROJECT_ID: ${{ secrets.HEFENG_PROJECT_ID }}
         HEFENG_PRIVATE_KEY: ${{ secrets.HEFENG_PRIVATE_KEY }}
         TANSHU_API_KEY: ${{ secrets.TANSHU_API_KEY }}
-        # 判断是否是定时触发
+        # 定时任务在 workflow 层直接映射运行模式，避免脚本和 cron 表达式双重维护。
         IS_SCHEDULED: ${{ github.event_name == 'schedule' }}
+        RUN_MODE: ${{ github.event_name == 'schedule' && (github.event.schedule == '15 23 * * *' && 'morning' || github.event.schedule == '30 2 * * *' && 'midday' || github.event.schedule == '20 8 * * *' && 'evening' || 'auto') || (github.event.inputs.run_mode || 'auto') }}
+        DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true' }}
+        FETCH_LATEST_UID: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run != 'true') }}
       run: |
         echo "=== 运行主脚本 ==="
-        echo "传递的环境变量:"
-        echo "WXPUSHER_APP_TOKEN 长度: ${#WXPUSHER_APP_TOKEN}"
-        echo "HEFENG_API_HOST: $HEFENG_API_HOST"
-        echo "HEFENG_KEY_ID: $HEFENG_KEY_ID"
-        echo "HEFENG_PROJECT_ID: $HEFENG_PROJECT_ID"
-        echo "HEFENG_PRIVATE_KEY 长度: ${#HEFENG_PRIVATE_KEY}"
+        echo "环境变量检查已完成，不输出密钥内容"
         echo "IS_SCHEDULED: $IS_SCHEDULED"
-        echo "TANSHU_API_KEY: $TANSHU_API_KEY"
-        
-        # 运行脚本
-        node scripts/send-message.js $IS_SCHEDULED
+        echo "RUN_MODE: ${RUN_MODE:-auto}"
+        echo "DRY_RUN: $DRY_RUN"
+        echo "FETCH_LATEST_UID: $FETCH_LATEST_UID"
 
-    # 提交 data 文件夹的变更到 Git
+        # 运行脚本
+        if [ "$DRY_RUN" = "true" ]; then
+          node scripts/send-message.js $IS_SCHEDULED --dry-run
+        else
+          node scripts/send-message.js $IS_SCHEDULED
+        fi
+
+    - name: Upload preview artifacts
+      if: ${{ !cancelled() && hashFiles('dist/**') != '' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: wxpusher-preview
+        path: dist/
+        retention-days: 7
+
+    # 提交 data 文件夹的非敏感变更到 Git
     - name: Commit and push data files
-      if: always()
+      if: success() && !(github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true')
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        REF_NAME: ${{ github.ref_name }}
       run: |
         echo "📦 检查 data 文件夹是否有变更..."
         
-        # 检查是否有文件变更
-        if git status --porcelain data/ | grep -q .; then
+        # 检查是否有允许提交的文件变更
+        if git status --porcelain data/history_data.json | grep -q .; then
           echo "🔄 检测到 data 文件夹有变更，准备提交..."
 
           # 配置 Git 用户信息（使用 GitHub Actions 机器人）
@@ -151,10 +173,13 @@ jobs:
 
           # 拉取远程最新更改，避免推送冲突
           echo "⬇️ 拉取远程最新代码..."
-          git pull --rebase origin ${{ github.ref_name }} || echo "拉取失败或无新提交"
+          git pull --rebase origin "$REF_NAME" || {
+            echo "❌ 拉取远程最新代码失败，请手动处理冲突后重试"
+            exit 1
+          }
 
-          # 添加变更的文件
-          git add data/
+          # 添加允许提交的状态文件，避免提交 token/cache/UID 等敏感文件
+          git add data/history_data.json
 
           # 创建提交信息
           if [ "${{ github.event_name }}" = "schedule" ]; then
@@ -168,7 +193,7 @@ jobs:
 
           # 推送
           echo "🚀 推送变更到仓库..."
-          git push origin HEAD:${{ github.ref_name }}
+          git push origin "HEAD:$REF_NAME"
           echo "✅ 推送完成"
         else
           echo "✅ data 文件夹无变更，无需提交"

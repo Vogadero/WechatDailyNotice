@@ -4,11 +4,85 @@ const fs = require('fs');
 const path = require('path');
 const minify = require('html-minifier').minify;
 
-// 从命令行参数判断是否是定时触发
-const isScheduled = process.argv[2] === 'true';
+// 命令行参数
+const cliArgs = process.argv.slice(2);
+
+function isTruthy(value) {
+  return ['1', 'true', 'yes', 'on'].includes(String(value || '').toLowerCase());
+}
+
+function getBooleanCliFlag(args, name) {
+  const flag = `--${name}`;
+  const prefix = `${flag}=`;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === flag) {
+      const nextArg = args[i + 1];
+      if (nextArg === 'true' || nextArg === 'false') {
+        return nextArg === 'true';
+      }
+      return true;
+    }
+    if (arg.startsWith(prefix)) {
+      return isTruthy(arg.slice(prefix.length));
+    }
+  }
+
+  return false;
+}
+
+function getCliOption(args, name) {
+  const flag = `--${name}`;
+  const prefix = `${flag}=`;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === flag) {
+      return args[i + 1] || '';
+    }
+    if (arg.startsWith(prefix)) {
+      return arg.slice(prefix.length);
+    }
+  }
+
+  return '';
+}
+
+// 从命令行第一个位置参数判断是否是定时触发，兼容原有 `node scripts/send-message.js true|false`
+const positionalScheduledArg = cliArgs[0];
+const isScheduled = positionalScheduledArg === 'true'
+  || (!['true', 'false'].includes(positionalScheduledArg) && isTruthy(process.env.IS_SCHEDULED));
+
+// 预览模式：拉取数据并生成 HTML，但不发送 WxPusher
+const isDryRun = getBooleanCliFlag(cliArgs, 'dry-run') || getBooleanCliFlag(cliArgs, 'preview') || isTruthy(process.env.DRY_RUN);
+
+// 是否主动从 UID API 获取收件人。定时任务默认获取；GitHub Actions 手动真实发送可通过 FETCH_LATEST_UID=true 获取。
+const shouldFetchLatestUid = isScheduled || isTruthy(process.env.FETCH_LATEST_UID);
+
+const RUN_MODE_NAMES = {
+  morning: '早安推送',
+  midday: '午间推送',
+  evening: '晚间推送'
+};
+const rawRequestedRunMode = getCliOption(cliArgs, 'run-mode') || process.env.RUN_MODE || '';
+const hasRunModeOverride = Boolean(rawRequestedRunMode);
+const requestedRunMode = rawRequestedRunMode === 'auto' ? '' : rawRequestedRunMode;
+
+const MAX_WXPUSHER_CONTENT_LENGTH = 40000;
+const PREVIEW_OUTPUT_DIR = path.join(__dirname, '../dist');
 
 // 配置
 const CONFIG = require('./config');
+
+function hasHefengConfig() {
+  return Boolean(
+    CONFIG.HEFENG_API_HOST
+    && CONFIG.HEFENG_PRIVATE_KEY
+    && CONFIG.HEFENG_KEY_ID
+    && CONFIG.HEFENG_PROJECT_ID
+  );
+}
 
 // 动态导入 jose 库（ESM）
 let jose;
@@ -45,17 +119,84 @@ async function axiosWithRetry(config, maxRetries = 3, baseDelay = 1000) {
   }
 }
 
-// 安全的 Promise 包装器，确保所有异步操作都能正确完成
+// 安全的 Promise 包装器，确保异步操作不会无限期阻塞后续流程
 async function safeAsyncCall(asyncFn, name, timeout = 25000) {
-  return Promise.race([
-    asyncFn(),
-    new Promise((_, reject) => 
-      setTimeout(() => reject(new Error(`${name} 超时 (${timeout}ms)`)), timeout)
-    )
-  ]).catch(error => {
+  let timeoutTimer;
+  try {
+    const timeoutPromise = new Promise((_, reject) => {
+      timeoutTimer = setTimeout(() => {
+        console.warn(`${name} 已等待 ${timeout}ms，按超时失败处理...`);
+        reject(new Error(`${name} 超过 ${timeout}ms 未完成`));
+      }, timeout);
+    });
+
+    return await Promise.race([asyncFn(), timeoutPromise]);
+  } catch (error) {
     console.error(`${name} 执行失败:`, error.message);
     return { success: false, error: error.message };
-  });
+  } finally {
+    if (timeoutTimer) {
+      clearTimeout(timeoutTimer);
+    }
+  }
+}
+
+function maskSensitiveValue(value, visiblePrefix = 4, visibleSuffix = 4) {
+  if (!value || typeof value !== 'string') return '';
+  if (value.length <= visiblePrefix + visibleSuffix) return `${value.slice(0, visiblePrefix)}***`;
+  return `${value.slice(0, visiblePrefix)}...${value.slice(-visibleSuffix)}`;
+}
+
+function maskUid(uid) {
+  if (!uid || typeof uid !== 'string') return '';
+  if (uid.length <= 12) return `${uid.slice(0, 3)}***`;
+  return `${uid.slice(0, 8)}...${uid.slice(-4)}`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[char]));
+}
+
+function sanitizeUrl(value) {
+  const url = String(value || '').trim();
+  if (!url) return '';
+
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return escapeHtml(parsed.href);
+    }
+  } catch (error) {
+    console.warn('忽略无效链接:', error.message);
+  }
+
+  return '';
+}
+
+function savePreviewArtifacts({ reason, htmlContent, minifiedHtml, report, dataResults }) {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const safeReason = String(reason || 'preview').replace(/[^a-zA-Z0-9_-]/g, '-');
+  const baseName = `${timestamp}-${safeReason}`;
+
+  fs.mkdirSync(PREVIEW_OUTPUT_DIR, { recursive: true });
+
+  const htmlPath = path.join(PREVIEW_OUTPUT_DIR, `${baseName}.html`);
+  const minifiedHtmlPath = path.join(PREVIEW_OUTPUT_DIR, `${baseName}.min.html`);
+  const reportPath = path.join(PREVIEW_OUTPUT_DIR, `${baseName}.report.json`);
+  const rawDataPath = path.join(PREVIEW_OUTPUT_DIR, `${baseName}.raw-data.json`);
+
+  fs.writeFileSync(htmlPath, htmlContent, 'utf8');
+  fs.writeFileSync(minifiedHtmlPath, minifiedHtml, 'utf8');
+  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
+  fs.writeFileSync(rawDataPath, JSON.stringify(dataResults, null, 2), 'utf8');
+
+  return { htmlPath, minifiedHtmlPath, reportPath, rawDataPath };
 }
 
 // 并发限制器 - 允许同时进行多个请求，但限制总并发数，防止服务器压力过大
@@ -203,8 +344,8 @@ async function generateHefengToken() {
     };
 
     console.log('⚙️  JWT配置信息:');
-    console.log('   Header:', JSON.stringify(customHeader));
-    console.log('   Payload:', JSON.stringify(customPayload));
+    console.log('   Header:', JSON.stringify({ ...customHeader, kid: maskSensitiveValue(customHeader.kid) }));
+    console.log('   Payload:', JSON.stringify({ ...customPayload, sub: maskSensitiveValue(customPayload.sub) }));
     console.log(`   有效期: ${(exp - iat) / 60} 分钟`);
 
     // 导入私钥
@@ -224,9 +365,7 @@ async function generateHefengToken() {
       token: token,
       generated_at: iat,
       expires_at: exp,
-      created_at: new Date().toISOString(),
-      header: customHeader,
-      payload: customPayload
+      created_at: new Date().toISOString()
     };
 
   } catch (error) {
@@ -238,10 +377,10 @@ async function generateHefengToken() {
 // 获取存储的UID
 function getStoredUid() {
   try {
-    const uidPath = path.join(__dirname, '../data/latest_uid.json');
+    const uidPath = CONFIG.UID_CACHE_FILE;
     if (fs.existsSync(uidPath)) {
       const data = JSON.parse(fs.readFileSync(uidPath, 'utf8'));
-      console.log(`📁 从本地文件读取UID: ${data.uid} (更新时间: ${data.updated}, 触发方式: ${data.trigger || '未知'})`);
+      console.log(`📁 从本地文件读取UID: ${maskUid(data.uid)} (更新时间: ${data.updated}, 触发方式: ${data.trigger || '未知'})`);
       return {
         success: true,
         uid: data.uid
@@ -282,67 +421,84 @@ function saveHistoryData(data) {
   }
 }
 
+function mergeHistoryUpdates(updates) {
+  return updates.reduce((merged, update) => {
+    if (!update) return merged;
+    return {
+      ...merged,
+      ...update
+    };
+  }, getHistoryData());
+}
+
+function saveLatestUid(uidData) {
+  try {
+    const uidPath = CONFIG.UID_CACHE_FILE;
+    const dataDir = path.dirname(uidPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(
+      uidPath,
+      JSON.stringify(uidData, null, 2)
+    );
+    console.log('✅ UID已存储到本地文件 (触发方式: 定时任务)');
+  } catch (error) {
+    console.error('存储UID到文件失败:', error.message);
+  }
+}
+
 // 获取最新的UID（优化：只有定时任务时才调用API）
 async function getLatestUid() {
   try {
     let latestUid;
-    let shouldUpdateFile = false;
+    let uidDataToSave = null;
 
-    if (isScheduled) {
-      // 定时任务：从API获取最新UID
-      console.log('⏰ 定时任务，正在获取最新的UID...');
+    if (CONFIG.WXPUSHER_UID) {
+      latestUid = CONFIG.WXPUSHER_UID;
+      console.log(`使用环境变量 WXPUSHER_UID: ${maskUid(latestUid)}`);
+      uidDataToSave = null;
+    } else if (shouldFetchLatestUid) {
+      // 定时任务或 Actions 手动真实发送：从 API 获取最新 UID
+      console.log('⏰ 正在从 UID API 获取最新的UID...');
       const response = await axios.get(CONFIG.UID_API, {
         timeout: 10000
       });
 
       if (response.data.code === 200 && response.data.data && response.data.data.length > 0) {
         latestUid = response.data.data[0].uid;
-        console.log(`获取到的UID: ${latestUid}`);
-        shouldUpdateFile = true;
+        console.log(`获取到的UID: ${maskUid(latestUid)}`);
+        uidDataToSave = {
+          uid: latestUid,
+          updated: new Date().toISOString(),
+          trigger: isScheduled ? 'scheduled' : 'manual-api',
+          source: 'api'
+        };
       } else {
         throw new Error('UID API返回数据格式异常');
       }
     } else {
-      // 手动触发：从本地存储读取
-      console.log('👆 手动触发，从本地存储读取UID...');
+      // 本地手动触发：从本地存储读取
+      console.log('👆 本地手动触发，从本地存储读取UID...');
       const storedUid = getStoredUid();
       if (storedUid.success) {
         latestUid = storedUid.uid;
-        shouldUpdateFile = false; // 手动触发不更新文件，但会存储（如果需要）
+        uidDataToSave = null; // 本地手动触发不更新文件
       } else {
-        throw new Error('手动触发时未找到本地UID文件，请先运行一次定时任务');
+        throw new Error('本地手动触发时未找到本地UID文件，请配置 WXPUSHER_UID 环境变量，或设置 FETCH_LATEST_UID=true 从 UID API 获取');
       }
     }
 
-    // 存储到文件（仅定时任务存储，记录触发方式）
-    if (latestUid && isScheduled) {
-      try {
-        const dataDir = path.join(__dirname, '../data');
-        if (!fs.existsSync(dataDir)) {
-          fs.mkdirSync(dataDir, { recursive: true });
-        }
-        const uidData = {
-          uid: latestUid,
-          updated: new Date().toISOString(),
-          trigger: 'scheduled',
-          source: 'api'
-        };
-        fs.writeFileSync(
-          path.join(dataDir, 'latest_uid.json'),
-          JSON.stringify(uidData, null, 2)
-        );
-        console.log(`✅ UID已存储到本地文件 (触发方式: 定时任务)`);
-      } catch (error) {
-        console.error('存储UID到文件失败:', error.message);
-      }
-    } else if (latestUid && !isScheduled) {
-      console.log('ℹ️ 手动触发模式，不更新本地UID文件');
+    // UID 缓存只在发送成功后由主流程持久化。
+    if (latestUid && !uidDataToSave) {
+      console.log('ℹ️ 本地手动触发模式，不更新本地UID文件');
     }
 
     if (latestUid) {
       return {
         success: true,
-        uid: latestUid
+        uid: latestUid,
+        uidDataToSave
       };
     } else {
       throw new Error('无法获取UID');
@@ -350,19 +506,22 @@ async function getLatestUid() {
   } catch (error) {
     console.error('获取最新UID失败:', error.message);
 
-    // 对于手动触发，如果读取本地文件失败，就直接失败
-    if (!isScheduled) {
-      throw new Error(`手动触发时获取UID失败: ${error.message}`);
+    // 对于本地手动触发，如果读取本地文件失败，就直接失败
+    if (!shouldFetchLatestUid) {
+      throw new Error(`本地手动触发时获取UID失败: ${error.message}`);
     }
 
-    // 对于定时任务，尝试从存储获取
-    console.log('尝试从本地存储获取UID...');
+    // 对于 API 获取模式，尝试从 UID 缓存回退。CI 中缓存位于 runner 临时目录，不能依赖仓库内存在历史 UID。
+    console.log('尝试从 UID 缓存获取UID...');
     const storedUid = getStoredUid();
     if (storedUid.success) {
-      return storedUid;
+      return {
+        ...storedUid,
+        uidDataToSave: null
+      };
     }
 
-    throw new Error(`获取UID失败: ${error.message}`);
+    throw new Error(`获取UID失败: ${error.message}。建议配置 WXPUSHER_UID 环境变量作为固定收件人，避免依赖 UID API 或本地缓存`);
   }
 }
 
@@ -640,35 +799,11 @@ async function getMinutePrecipitation(token) {
     }
   } catch (error) {
     console.error('获取分钟级降水失败:', error.message);
-
-    // 降级处理：返回模拟数据
-    console.warn('⚠️ 使用模拟降水数据');
-    return getMockMinutePrecipitation();
+    return {
+      success: false,
+      error: `获取分钟级降水失败: ${error.message}`
+    };
   }
-}
-
-// 模拟分钟级降水数据（降级使用）
-function getMockMinutePrecipitation() {
-  const hasPrecipitation = Math.random() > 0.7;
-  const precipitationType = ['雨', '雪'][Math.floor(Math.random() * 2)];
-  const intensity = ['小雨', '中雨', '大雨'][Math.floor(Math.random() * 3)];
-  const startTime = '未来15分钟';
-  const endTime = '持续约1小时';
-
-  return {
-    success: true,
-    data: {
-      hasPrecipitation,
-      precipitationType,
-      intensity,
-      startTime,
-      endTime,
-      summary: hasPrecipitation ? `${intensity}即将开始` : '暂无降水',
-      maxPrecip: hasPrecipitation ? (Math.random() * 0.5).toFixed(2) : '0.00',
-      updateTime: new Date().toISOString()
-    },
-    isSevere: intensity === '大雨' || intensity === '大雪'
-  };
 }
 
 // 获取真实的天气预警信息
@@ -742,48 +877,11 @@ async function getWeatherAlerts(token) {
     }
   } catch (error) {
     console.error('获取天气预警失败:', error.message);
-
-    // 降级处理：返回模拟数据
-    console.warn('⚠️ 使用模拟预警数据');
-    return getMockWeatherAlerts();
+    return {
+      success: false,
+      error: `获取天气预警失败: ${error.message}`
+    };
   }
-}
-
-// 模拟天气预警数据（降级使用）
-function getMockWeatherAlerts() {
-  const alerts = [];
-
-  if (Math.random() > 0.8) {
-    const alertTypes = [
-      { type: '暴雨', level: '黄色', colorCode: 'yellow', desc: '预计未来6小时内将有暴雨，请注意防范' },
-      { type: '大风', level: '蓝色', colorCode: 'blue', desc: '预计未来24小时内将有6-7级大风' },
-      { type: '雷电', level: '黄色', colorCode: 'yellow', desc: '预计未来2小时内将有雷电活动' },
-      { type: '高温', level: '橙色', colorCode: 'orange', desc: '预计最高气温将达38℃以上' }
-    ];
-
-    const randomAlert = alertTypes[Math.floor(Math.random() * alertTypes.length)];
-    alerts.push({
-      type: randomAlert.type,
-      level: randomAlert.level,
-      colorCode: randomAlert.colorCode,
-      description: randomAlert.desc,
-      headline: `${randomAlert.level}${randomAlert.type}预警`,
-      time: new Date().toLocaleString('zh-CN'),
-      effectiveTime: '立即生效',
-      expireTime: new Date(Date.now() + 12 * 60 * 60 * 1000).toLocaleString('zh-CN'), // 12小时后
-      severity: randomAlert.level === '橙色' || randomAlert.level === '红色' ? '严重' : '中等',
-      instruction: '请关注官方预警信息，做好防范措施'
-    });
-  }
-
-  return {
-    success: true,
-    data: {
-      alerts,
-      hasAlerts: alerts.length > 0,
-      count: alerts.length
-    }
-  };
 }
 
 // 获取KFC文案
@@ -806,7 +904,7 @@ async function getKfcContent(isThursday) {
     });
 
     if (response.data.code === 200) {
-      const kfcText = response.data.data.kfc;
+      const kfcText = escapeHtml(response.data.data.kfc);
       console.log('获取到的KFC文案:', kfcText);
 
       const kfcContent = `<div style="background: rgba(20, 20, 30, 0.6); border-radius: 12px; padding: 16px; margin: 15px 0; border: 1px solid rgba(211, 47, 47, 0.4); box-shadow: 0 0 15px rgba(211, 47, 47, 0.1); backdrop-filter: blur(10px);">
@@ -1023,17 +1121,18 @@ async function getExchangeRate() {
         }
       }
       
-      // Save updated history
       const todayStr = new Date().toISOString().split('T')[0];
-      historyData.exchange = {
-        items: newHistoryRates,
-        date: todayStr
+      const historyUpdate = {
+        exchange: {
+          items: newHistoryRates,
+          date: todayStr
+        }
       };
-      saveHistoryData(historyData);
 
       console.log(`获取到汇率数据: ${displayRates.length} 条`);
       return {
         success: true,
+        historyUpdate,
         data: {
           updated: response.data.data.updated,
           next_updated: response.data.data.next_updated,
@@ -1178,9 +1277,14 @@ async function getGoldPrice() {
     });
 
     if (response.data.code === 200) {
-      console.log(`获取到黄金价格数据: ${response.data.data.date}`);
-      
-      const data = response.data.data;
+      const data = response.data.data || {};
+      console.log(`获取到黄金价格数据: ${data.date || '未知日期'}`);
+
+      data.metals = Array.isArray(data.metals) ? data.metals : [];
+      data.stores = Array.isArray(data.stores) ? data.stores : [];
+      data.banks = Array.isArray(data.banks) ? data.banks : [];
+      data.recycle = Array.isArray(data.recycle) ? data.recycle : [];
+
       const historyData = getHistoryData();
       let historyGold = historyData.gold || {};
       let lastPrices = historyGold;
@@ -1234,14 +1338,16 @@ async function getGoldPrice() {
       }
       
       const todayStr = new Date().toISOString().split('T')[0];
-      historyData.gold = {
-          items: newHistoryGold,
-          date: todayStr
+      const historyUpdate = {
+          gold: {
+              items: newHistoryGold,
+              date: todayStr
+          }
       };
-      saveHistoryData(historyData);
 
       return {
         success: true,
+        historyUpdate,
         data: {
             ...data,
             diffLabel: diffLabel
@@ -1420,7 +1526,7 @@ async function fetchApi(url, name, params = { encoding: 'json' }) {
       if (response.data.code === 200) {
         return { success: true, data: response.data.data };
       } else {
-        return { success: true, data: response.data.data };
+        return { success: false, error: `${name}API返回错误: ${response.data.message || response.data.msg || response.data.code || '未知错误'}` };
       }
     } catch (error) {
       console.error(`获取${name}失败:`, error.message);
@@ -1438,6 +1544,108 @@ async function getMaoyanWeb() { return fetchApi(CONFIG.MAOYAN_WEB_API, '猫眼�
 async function getDouyinHot() { return fetchApi(CONFIG.DOUYIN_API, '抖音热搜'); }
 async function getBiliHot() { return fetchApi(CONFIG.BILI_API, 'B站热搜'); }
 async function getBaiduTieba() { return fetchApi(CONFIG.BAIDU_TIEBA_API, '百度贴吧'); }
+
+const HOT_LIST_DEFINITIONS = [
+  {
+    key: 'douyin',
+    configKey: 'DOUYIN',
+    tabId: 'douyin',
+    name: '抖音',
+    taskName: '抖音热搜',
+    type: 'list',
+    fetcher: () => getDouyinHot(),
+    getItems: data => data,
+    map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null })
+  },
+  {
+    key: 'bili',
+    configKey: 'BILI',
+    tabId: 'bili',
+    name: 'B站',
+    taskName: 'B站热搜',
+    type: 'list',
+    fetcher: () => getBiliHot(),
+    getItems: data => data,
+    map: item => ({ title: item.title, desc: '', link: item.link, rank: null })
+  },
+  {
+    key: 'weibo',
+    configKey: 'WEIBO',
+    tabId: 'weibo',
+    name: '微博',
+    taskName: '微博热搜',
+    type: 'list',
+    fetcher: () => getWeiboHot(),
+    getItems: data => data,
+    map: item => ({ title: item.title, desc: '', link: item.link, rank: null })
+  },
+  {
+    key: 'toutiao',
+    configKey: 'TOUTIAO',
+    tabId: 'toutiao',
+    name: '头条',
+    taskName: '头条热搜',
+    type: 'list',
+    fetcher: () => getToutiaoHot(),
+    getItems: data => data,
+    map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null })
+  },
+  {
+    key: 'zhihu',
+    configKey: 'ZHIHU',
+    tabId: 'zhihu',
+    name: '知乎',
+    taskName: '知乎热榜',
+    type: 'list',
+    fetcher: () => getZhihuHot(),
+    getItems: data => data,
+    map: item => ({ title: item.title, desc: item.hot_value_desc || item.detail, link: item.link, rank: null })
+  },
+  {
+    key: 'baiduTieba',
+    configKey: 'TIEBA',
+    tabId: 'tieba',
+    name: '贴吧',
+    taskName: '百度贴吧',
+    type: 'list',
+    fetcher: () => getBaiduTieba(),
+    getItems: data => data,
+    map: item => ({ title: item.title, desc: item.desc, link: item.url, rank: item.rank })
+  },
+  {
+    key: 'maoyanMovie',
+    configKey: 'MOVIE',
+    tabId: 'movie',
+    name: '电影',
+    taskName: '猫眼电影',
+    type: 'maoyan',
+    fetcher: () => getMaoyanMovie(),
+    getItems: data => data?.list,
+    map: item => ({ title: item.movie_name, desc: `${item.box_office}${item.box_office_unit}` })
+  },
+  {
+    key: 'maoyanTv',
+    configKey: 'TV',
+    tabId: 'tv',
+    name: '剧集',
+    taskName: '猫眼电视',
+    type: 'maoyan',
+    fetcher: () => getMaoyanTv(),
+    getItems: data => data?.list,
+    map: item => ({ title: item.programme_name, desc: item.market_rate_desc })
+  },
+  {
+    key: 'maoyanWeb',
+    configKey: 'WEB',
+    tabId: 'web',
+    name: '网剧',
+    taskName: '猫眼网剧',
+    type: 'maoyan',
+    fetcher: () => getMaoyanWeb(),
+    getItems: data => data?.list,
+    map: item => ({ title: item.series_name, desc: item.curr_heat_desc })
+  }
+];
 
 // 获取Bing壁纸
 async function getBingWallpaper() {
@@ -1470,6 +1678,14 @@ async function getBingWallpaper() {
 async function sendMessage(htmlContent, summary, uid) {
   try {
     console.log('正在发送消息到WxPusher...');
+
+    if (htmlContent.length > MAX_WXPUSHER_CONTENT_LENGTH) {
+      throw new Error(`WxPusher内容超过限制: ${htmlContent.length}/${MAX_WXPUSHER_CONTENT_LENGTH}`);
+    }
+
+    if (!CONFIG.WXPUSHER_APP_TOKEN) {
+      throw new Error('未配置 WXPUSHER_APP_TOKEN，无法发送消息');
+    }
 
     const messageData = {
       appToken: CONFIG.WXPUSHER_APP_TOKEN,
@@ -1516,6 +1732,21 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   const w = weatherData.data;
   const forecastDays = forecastData.data;
   
+  const safeWeather = {
+    location: escapeHtml(w.location),
+    sunrise: escapeHtml(w.sunrise),
+    sunset: escapeHtml(w.sunset),
+    temperature: escapeHtml(w.temperature),
+    humidity: escapeHtml(w.humidity),
+    windDirection: escapeHtml(w.wind_direction),
+    windPower: escapeHtml(w.wind_power),
+    pressure: escapeHtml(w.pressure),
+    precipitation: escapeHtml(w.precipitation),
+    pm25: escapeHtml(w.pm25),
+    aqi: escapeHtml(w.aqi || ''),
+    airQuality: escapeHtml(w.airQuality)
+  };
+
   // Generate unique ID to avoid conflicts in list views
   const uniqueId = 'carousel-' + Math.floor(Math.random() * 1000000);
 
@@ -1637,23 +1868,26 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
           }
         `;
 
+        const safeName = escapeHtml(item.name);
+        const safeLevel = escapeHtml(item.level || item.status || '');
+        const safeAdvice = escapeHtml(item.description || item.detail || item.category || item.text || item.desc || '暂无详细建议');
+
         gridItems += `
           <div id="grid-item-${uniqueId}-${i}" class="wgi">
             <div style="font-size: 16px;">${icon}</div>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-size: 11px; color: #a78bfa; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${item.name}</div>
-              <div style="font-size: 10px; color: #fff;">${item.level || item.status || ''}</div>
+              <div style="font-size: 11px; color: #a78bfa; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${safeName}</div>
+              <div style="font-size: 10px; color: #fff;">${safeLevel}</div>
             </div>
           </div>
         `;
-        
+
         // 3. Advice Item
-        let adviceText = item.description || item.detail || item.category || item.text || item.desc || "暂无详细建议";
         adviceItems += `
             <div class="wai" style="height: 36px; box-sizing: border-box;">
-                <span style="color: #f472b6; margin-right: 8px; font-weight: bold; flex-shrink: 0; background: rgba(0,0,0,0.4); z-index: 2; padding-right: 6px;">${item.name}</span>
+                <span style="color: #f472b6; margin-right: 8px; font-weight: bold; flex-shrink: 0; background: rgba(0,0,0,0.4); z-index: 2; padding-right: 6px;">${safeName}</span>
                 <div style="flex: 1; overflow: hidden; white-space: nowrap;">
-                    <span class="h-scroll-${uniqueId}">${adviceText}</span>
+                    <span class="h-scroll-${uniqueId}">${safeAdvice}</span>
                 </div>
             </div>
         `;
@@ -1674,7 +1908,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
       <div style="position: relative; z-index: 1; flex: 1; display: flex; flex-direction: column;">
         <!-- Header -->
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
-          <div style="font-size: 16px; font-weight: bold; color: #fff;">${w.location}</div>
+          <div style="font-size: 16px; font-weight: bold; color: #fff;">${safeWeather.location}</div>
           <div style="font-size: 12px; color: #00f3ff; font-family: monospace;">${timeInfo.time}</div>
         </div>
         
@@ -1690,14 +1924,14 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
                 <circle r="10" fill="rgba(250, 204, 21, 0.3)" />
               </g>
               <!-- Texts -->
-              <text x="20" y="115" fill="#94a3b8" font-size="10" text-anchor="middle">${w.sunrise}</text>
-              <text x="180" y="115" fill="#94a3b8" font-size="10" text-anchor="middle">${w.sunset}</text>
+              <text x="20" y="115" fill="#94a3b8" font-size="10" text-anchor="middle">${safeWeather.sunrise}</text>
+              <text x="180" y="115" fill="#94a3b8" font-size="10" text-anchor="middle">${safeWeather.sunset}</text>
            </svg>
            <!-- Center Temp -->
            <div style="position: absolute; top: 30px; left: 0; width: 100%; text-align: center;">
               <div style="display: flex; justify-content: center; align-items: center; gap: 8px;">
                  <span style="font-size: 28px;">${currentIcon}</span>
-                 <span style="font-size: 36px; font-weight: 300; color: #fff;">${w.temperature}°</span>
+                 <span style="font-size: 36px; font-weight: 300; color: #fff;">${safeWeather.temperature}°</span>
               </div>
            </div>
         </div>
@@ -1707,32 +1941,32 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
            <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">💧</div>
              <div style="font-size: 10px; color: #64748b;">湿度</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.humidity}%</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${safeWeather.humidity}%</div>
            </div>
            <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">🌬️</div>
-             <div style="font-size: 10px; color: #64748b;">${w.wind_direction}</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.wind_power}</div>
+             <div style="font-size: 10px; color: #64748b;">${safeWeather.windDirection}</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${safeWeather.windPower}</div>
            </div>
            <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">⏲️</div>
              <div style="font-size: 10px; color: #64748b;">气压</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.pressure}hPa</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${safeWeather.pressure}hPa</div>
            </div>
            <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">☔</div>
              <div style="font-size: 10px; color: #64748b;">降水</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.precipitation}mm</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${safeWeather.precipitation}mm</div>
            </div>
            <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">😷</div>
              <div style="font-size: 10px; color: #64748b;">PM2.5</div>
-             <div style="font-size: 12px; color: #e2e8f0;">${w.pm25}</div>
+             <div style="font-size: 12px; color: #e2e8f0;">${safeWeather.pm25}</div>
            </div>
            <div class="wdi">
              <div style="font-size: 12px; margin-bottom: 2px;">🍃</div>
-             <div style="font-size: 10px; color: #64748b;">空气 ${w.aqi || ''}</div>
-             <div style="font-size: 12px; color: ${w.airQuality === '优' ? '#4ade80' : '#facc15'};">${w.airQuality}</div>
+             <div style="font-size: 10px; color: #64748b;">空气 ${safeWeather.aqi}</div>
+             <div style="font-size: 12px; color: ${w.airQuality === '优' ? '#4ade80' : '#facc15'};">${safeWeather.airQuality}</div>
            </div>
         </div>
         <div style="margin-top: 15px; border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 8px; flex: 1; display: flex; flex-direction: column;">
@@ -1767,21 +2001,27 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
   let forecastHtml = '';
   forecastDays.forEach((day, index) => {
     const borderStyle = index === 0 ? 'border-left-color: #00f3ff;' : '';
+    const safeDayName = escapeHtml(day.dayName);
+    const safeDayCondition = escapeHtml(day.dayCondition);
+    const safeWindDirection = escapeHtml(day.windDirection);
+    const safeWindPower = escapeHtml(day.windPower);
+    const safeMaxTemp = escapeHtml(day.maxTemp);
+    const safeMinTemp = escapeHtml(day.minTemp);
     forecastHtml += `
       <div class="wfi" style="${borderStyle}">
         <div style="display: flex; flex-direction: column; width: 60px;">
-          <span style="font-size: 14px; color: #e2e8f0;">${day.dayName}</span>
-          <span style="font-size: 10px; color: #64748b;">${day.dayCondition}</span>
+          <span style="font-size: 14px; color: #e2e8f0;">${safeDayName}</span>
+          <span style="font-size: 10px; color: #64748b;">${safeDayCondition}</span>
         </div>
         <div style="font-size: 20px;">${day.dayIcon}</div>
         <!-- Wind Info -->
         <div style="display: flex; flex-direction: column; align-items: center; width: 60px;">
-            <span style="font-size: 10px; color: #94a3b8;">${day.windDirection}</span>
-            <span style="font-size: 10px; color: #64748b;">${day.windPower}</span>
+            <span style="font-size: 10px; color: #94a3b8;">${safeWindDirection}</span>
+            <span style="font-size: 10px; color: #64748b;">${safeWindPower}</span>
         </div>
         <div style="text-align: right; width: 40px;">
-          <div style="font-size: 16px; color: #fff; font-weight: 500;">${day.maxTemp}°</div>
-          <div style="font-size: 10px; color: #64748b;">${day.minTemp}°</div>
+          <div style="font-size: 16px; color: #fff; font-weight: 500;">${safeMaxTemp}°</div>
+          <div style="font-size: 10px; color: #64748b;">${safeMinTemp}°</div>
         </div>
       </div>
     `;
@@ -1824,6 +2064,7 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
           if (!container) return;
           var currentIndex = 0;
           var autoPlayInterval;
+          var scrollTimeout;
           var isUserInteracting = false;
 
           function getSlideWidth() {
@@ -1900,65 +2141,47 @@ function buildWeatherCarousel(weatherData, forecastData, timeInfo) {
 
 // 构建热点榜单模块
 function buildHotListModule(hotData) {
-  const tabs = [
-    { id: 'douyin', name: '抖音', data: hotData.douyin, type: 'list', config: 'DOUYIN',
-      map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
-    { id: 'bili', name: 'B站', data: hotData.bili, type: 'list', config: 'BILI',
-      map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
-    { id: 'weibo', name: '微博', data: hotData.weibo, type: 'list', config: 'WEIBO',
-      map: item => ({ title: item.title, desc: '', link: item.link, rank: null }) },
-    { id: 'toutiao', name: '头条', data: hotData.toutiao, type: 'list', config: 'TOUTIAO',
-      map: item => ({ title: item.title, desc: `热度: ${item.hot_value}`, link: item.link, rank: null }) },
-    { id: 'zhihu', name: '知乎', data: hotData.zhihu, type: 'list', config: 'ZHIHU',
-      map: item => ({ title: item.title, desc: item.hot_value_desc || item.detail, link: item.link, rank: null }) },
-    { id: 'tieba', name: '贴吧', data: hotData.baiduTieba, type: 'list', config: 'TIEBA',
-      map: item => ({ title: item.title, desc: item.desc, link: item.url, rank: item.rank }) },
-    { id: 'movie', name: '电影', data: hotData.maoyanMovie, type: 'maoyan', config: 'MOVIE',
-      map: item => ({ title: item.movie_name, desc: `${item.box_office}${item.box_office_unit}` }) },
-    { id: 'tv', name: '剧集', data: hotData.maoyanTv, type: 'maoyan', config: 'TV',
-      map: item => ({ title: item.programme_name, desc: item.market_rate_desc }) },
-    { id: 'web', name: '网剧', data: hotData.maoyanWeb, type: 'maoyan', config: 'WEB',
-      map: item => ({ title: item.series_name, desc: item.curr_heat_desc }) },
-  ];
-
   let tabsHtml = '';
-  
-  tabs.forEach((tab, index) => {
-    if (!CONFIG.SHOW_MODULES.HOT_LIST[tab.config]) return;
-    if (!tab.data || !tab.data.success || !tab.data.data) return;
-    
-    const rawList = tab.type === 'maoyan' ? tab.data.data.list : tab.data.data;
-    if (!Array.isArray(rawList) || rawList.length === 0) return;
-    
+
+  HOT_LIST_DEFINITIONS.forEach((tab, index) => {
+    if (!CONFIG.SHOW_MODULES.HOT_LIST[tab.configKey]) return;
+
+    const tabData = resolveFallbackResult(hotData[tab.key]);
+    const rawList = getHotListItems(tab, tabData);
+    if (rawList.length === 0) return;
+
     const items = rawList.slice(0, 10).map((item, idx) => {
        const mapped = tab.map(item);
-       const rank = mapped.rank || idx + 1;
+       const title = escapeHtml(mapped.title || '');
+       const desc = escapeHtml(mapped.desc || '');
+       const link = sanitizeUrl(mapped.link);
+       const rank = mapped.rank ?? idx + 1;
        let rankColor = '#64748b'; // default
        if (rank === 1) rankColor = '#ef4444'; // Red
        else if (rank === 2) rankColor = '#f97316'; // Orange
        else if (rank === 3) rankColor = '#facc15'; // Yellow
-       
+
        // 无缝滚动：文字复制两份 + translateX(-50%) 实现循环
-       const isLong = mapped.title.length > 16;
-       const titleHtml = isLong 
-         ? `<div class="ht-tt-scroll"><span class="ht-tt-inner">${mapped.title} &nbsp;&nbsp;&nbsp;&nbsp; ${mapped.title} &nbsp;&nbsp;&nbsp;&nbsp; ${mapped.title}</span></div>`
-         : `<div class="ht-tt">${mapped.title}</div>`;
-       
+       const isLong = title.length > 16;
+       const titleHtml = isLong
+         ? `<div class="ht-tt-scroll"><span class="ht-tt-inner">${title} &nbsp;&nbsp;&nbsp;&nbsp; ${title} &nbsp;&nbsp;&nbsp;&nbsp; ${title}</span></div>`
+         : `<div class="ht-tt">${title}</div>`;
+
        return `
-         ${mapped.link ? `<a href="${mapped.link}" class="ht-it" style="text-decoration:none;color:inherit">` : `<div class="ht-it">`}
+         ${link ? `<a href="${link}" class="ht-it" style="text-decoration:none;color:inherit">` : `<div class="ht-it">`}
            <div class="ht-rk" style="color: ${rankColor}">${rank}</div>
            <div class="ht-ct">
              ${titleHtml}
-             <div class="ht-dc">${mapped.desc}</div>
+             <div class="ht-dc">${desc}</div>
            </div>
-           ${mapped.link ? `<span class="ht-lk">🔗</span>` : ''}
-         ${mapped.link ? `</a>` : `</div>`}
+           ${link ? `<span class="ht-lk">🔗</span>` : ''}
+         ${link ? `</a>` : `</div>`}
        `;
     }).join('');
-    
+
     tabsHtml += `
-      <input type="radio" name="hot-tabs" id="tab-${tab.id}" class="tb-inp" hidden>
-      <label for="tab-${tab.id}" class="tb-lbl" style="order: ${index + 1};">${tab.name}</label>
+      <input type="radio" name="hot-tabs" id="tab-${tab.tabId}" class="tb-inp" hidden>
+      <label for="tab-${tab.tabId}" class="tb-lbl" style="order: ${index + 1};">${tab.name}</label>
       <div class="tb-cnt" style="order: 100; width: 100%;">
          ${items}
       </div>
@@ -2036,11 +2259,11 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     throw new Error('timeInfo 数据无效');
   }
   
-  if (!hitokotoData || !hitokotoData.hitokoto) {
-    console.error('❌ hitokotoData 数据无效');
-    throw new Error('hitokotoData 数据无效');
+  if (CONFIG.SHOW_MODULES.yiYan && (!hitokotoData || !hitokotoData.hitokoto)) {
+    console.warn('⚠️  hitokotoData 数据无效，跳过一言卡片');
   }
 
+  const shouldShowHitokoto = CONFIG.SHOW_MODULES.yiYan && hitokotoData && hitokotoData.hitokoto;
   const { dateTime, dayOfWeek, isThursday, simpleDate, time } = timeInfo;
   console.log(`   时间信息: ${dateTime}`);
 
@@ -2058,15 +2281,17 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   if (CONFIG.SHOW_MODULES.BING_WALLPAPER && bingData && bingData.success && bingData.data) {
     console.log('   添加Bing壁纸');
     const b = bingData.data;
+    const coverUrl = sanitizeUrl(b.cover);
+    const copyright = escapeHtml(b.copyright || '');
     // 使用封面图作为顶部大图，并添加遮罩及渐变过渡到深色背景
-    headerOverlay = `
-      <div style="position:relative;width:100%;height:220px;background:url('${b.cover}') no-repeat center center;background-size:cover">
+    headerOverlay = coverUrl ? `
+      <div style="position:relative;width:100%;height:220px;background:url('${coverUrl}') no-repeat center center;background-size:cover">
         <div style="position:absolute;top:0;left:0;width:100%;height:100%;background:linear-gradient(to bottom,rgba(2,4,10,0.1) 0%,rgba(2,4,10,0.8) 80%,rgba(2,4,10,1) 100%)"></div>
         <div style="position:absolute;bottom:10px;right:15px;text-align:right;z-index:15">
-          <div style="color:rgba(255,255,255,0.7);font-size:10px;text-shadow:0 1px 2px rgba(0,0,0,0.9);max-width:250px;line-height:1.2">${b.copyright || ''}</div>
+          <div style="color:rgba(255,255,255,0.7);font-size:10px;text-shadow:0 1px 2px rgba(0,0,0,0.9);max-width:250px;line-height:1.2">${copyright}</div>
         </div>
       </div>
-    `;
+    ` : '';
   }
 
   // 整体容器：深色背景，科技感字体
@@ -2083,9 +2308,9 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
         <div style="color:${CONFIG.SHOW_MODULES.BING_WALLPAPER&&bingData&&bingData.success?'#94a3b8':'#64748b'};font-size:12px;letter-spacing:2px;margin-bottom:4px">每日情报 / ${simpleDate}</div>
         <div style="color:#fff;font-size:22px;font-weight:bold;letter-spacing:0.5px">${dayOfWeek}</div>
       </div>
-      ${CONFIG.SHOW_MODULES.yiYan ? `<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;position:relative;backdrop-filter:blur(5px);margin-bottom:16px">
-        <div style="color:#94a3b8;font-size:14px;line-height:1.6;font-style:italic;margin-bottom:12px">"${hitokotoData.hitokoto}"</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px"><div style="color:#00f3ff">来源: ${hitokotoData.from}</div><div style="color:#475569">${hitokotoData.type}</div></div>
+      ${shouldShowHitokoto ? `<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:16px;position:relative;backdrop-filter:blur(5px);margin-bottom:16px">
+        <div style="color:#94a3b8;font-size:14px;line-height:1.6;font-style:italic;margin-bottom:12px">"${escapeHtml(hitokotoData.hitokoto)}"</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px"><div style="color:#00f3ff">来源: ${escapeHtml(hitokotoData.from)}</div><div style="color:#475569">${escapeHtml(hitokotoData.type)}</div></div>
       </div>` : ''}
     </div>
   `;
@@ -2094,7 +2319,10 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   if (CONFIG.SHOW_MODULES.LUCK && luckData && luckData.success && luckData.data) {
     console.log('   添加运势跑马灯');
     const l = luckData.data;
-    const scrollText = `🔮 今日运势: ${l.luck_desc || '未知'}  •  ${l.luck_tip || ''}  •  运势指数: ${l.luck_rank || ''}  •  ${l.luck_desc || ''}  •  ${l.luck_tip || ''}`; 
+    const luckDesc = escapeHtml(l.luck_desc || '未知');
+    const luckTip = escapeHtml(l.luck_tip || '');
+    const luckRank = escapeHtml(l.luck_rank || '');
+    const scrollText = `🔮 今日运势: ${luckDesc}  •  ${luckTip}  •  运势指数: ${luckRank}  •  ${luckDesc}  •  ${luckTip}`;
     html += `
       <div style="margin:0 0 20px 0;background:rgba(139,92,246,0.1);border-top:1px solid rgba(139,92,246,0.3);border-bottom:1px solid rgba(139,92,246,0.3);padding:8px 0;overflow:hidden;position:relative;white-space:nowrap">
         <div style="display:inline-block;font-size:12px;color:#a78bfa;font-weight:500;letter-spacing:1px;animation:marquee 20s linear infinite">${scrollText} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ${scrollText}</div>
@@ -2113,9 +2341,11 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
     console.log('   添加天气预警');
     alertData.data.alerts.forEach(alert => {
       const color = {'蓝色':'#3b82f6','黄色':'#eab308','橙色':'#f97316','红色':'#ef4444'}[alert.level] || '#ef4444';
+      const headline = escapeHtml(alert.headline || '');
+      const description = escapeHtml(alert.description || '');
       html += `<div style="margin-bottom:16px;background:rgba(239,68,68,0.1);border:1px solid ${color};border-left:4px solid ${color};border-radius:8px;padding:12px;display:flex;align-items:flex-start;gap:12px">
           <div style="font-size:20px">⚠️</div>
-          <div><div style="color:${color};font-weight:bold;font-size:14px;margin-bottom:4px">${alert.headline || ''}</div><div style="color:#cbd5e1;font-size:12px;line-height:1.4">${alert.description || ''}</div></div>
+          <div><div style="color:${color};font-weight:bold;font-size:14px;margin-bottom:4px">${headline}</div><div style="color:#cbd5e1;font-size:12px;line-height:1.4">${description}</div></div>
         </div>`;
     });
   }
@@ -2124,9 +2354,12 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   if (CONFIG.SHOW_MODULES.WEATHER && precipitationData && precipitationData.success && precipitationData.data && precipitationData.data.hasPrecipitation) {
     console.log('   添加降水预报');
     const p = precipitationData.data;
+    const precipSummary = escapeHtml(p.summary || '');
+    const precipIntensity = escapeHtml(p.intensity || '');
+    const precipStartTime = escapeHtml(p.startTime || '');
     html += `<div style="margin-bottom:10px;background:linear-gradient(90deg,rgba(6,182,212,0.1),transparent);border:1px solid rgba(6,182,212,0.3);border-radius:12px;padding:12px 16px;display:flex;align-items:center;justify-content:space-between">
-        <div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">🌧️</span><div><div style="color:#67e8f9;font-size:14px;font-weight:600">降水预警</div><div style="color:#a5f3fc;font-size:12px">${p.summary || ''}</div></div></div>
-        <div style="text-align:right"><div style="color:#fff;font-size:14px;font-weight:bold">${p.intensity || ''}</div><div style="color:#67e8f9;font-size:10px">${p.startTime || ''} 开始</div></div>
+        <div style="display:flex;align-items:center;gap:10px"><span style="font-size:18px">🌧️</span><div><div style="color:#67e8f9;font-size:14px;font-weight:600">降水预警</div><div style="color:#a5f3fc;font-size:12px">${precipSummary}</div></div></div>
+        <div style="text-align:right"><div style="color:#fff;font-size:14px;font-weight:bold">${precipIntensity}</div><div style="color:#67e8f9;font-size:10px">${precipStartTime} 开始</div></div>
       </div>`;
   }
 
@@ -2144,11 +2377,13 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   if (CONFIG.SHOW_MODULES.NEWS_60S && news60sData && news60sData.success && news60sData.data && Array.isArray(news60sData.data.news)) {
     console.log('   添加60秒读懂世界');
     const n = news60sData.data;
+    const newsDate = escapeHtml(n.date || '');
+    const newsTip = escapeHtml(n.tip || '');
     // 生成新闻列表HTML
     const newsItemsHtml = n.news.map((item, index) => `
       <div class="n60-it">
         <span class="n60-idx">[${String(index + 1).padStart(2, '0')}]</span>
-        <span class="n60-txt">${item}</span>
+        <span class="n60-txt">${escapeHtml(item)}</span>
       </div>
     `).join('');
 
@@ -2169,7 +2404,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
             <div class="n60-dot"></div>
             <div class="n60-tt">60秒世界摘要</div>
           </div>
-          <div class="n60-date">${n.date}</div>
+          <div class="n60-date">${newsDate}</div>
         </div>
 
         <!-- Scrolling Content -->
@@ -2195,7 +2430,7 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
         <!-- Footer -->
         <div class="n60-ft">
-          > TIP: ${n.tip}
+          > TIP: ${newsTip}
           <span class="n60-blk">_</span>
         </div>
 
@@ -2301,9 +2536,12 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
   // 热点榜单
   if (CONFIG.SHOW_MODULES.HOT_LIST && hotData) {
-    console.log('   添加热点榜单');
     try {
-      html += buildHotListModule(hotData);
+      const hotListHtml = buildHotListModule(hotData);
+      if (hotListHtml) {
+        console.log('   添加热点榜单');
+        html += hotListHtml;
+      }
     } catch (hotListError) {
       console.error('   ⚠️  热点榜单构建失败:', hotListError.message);
     }
@@ -2318,9 +2556,17 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   // 历史上的今天
   if (CONFIG.SHOW_MODULES.HISTORY && historyData && historyData.success) {
     const h = historyData.data;
+    const historyDate = escapeHtml(h.date || '');
+    const historyItems = h.items.slice(0,10).map(i => {
+      const link = sanitizeUrl(i.link);
+      const year = escapeHtml(i.year || '');
+      const title = escapeHtml(i.title || '');
+      const description = escapeHtml((i.description || '').substring(0, 60));
+      return `${link ? `<a href="${link}" class="hi" style="display:block;text-decoration:none;color:inherit">` : '<div class="hi">'}<div class="hy">${year}</div><div class="ht">${title}${link ? '<span class="hl">🔗</span>' : ''}</div><div class="hd">${description}...</div>${link ? '</a>' : '</div>'}`;
+    }).join('');
     const content = `
-      <div style="color:#94a3b8;font-size:12px;margin-bottom:15px">${h.date} (${h.items.length} 个事件)</div>
-      ${h.items.slice(0,10).map(i => `${i.link?`<a href="${i.link}" class="hi" style="display:block;text-decoration:none;color:inherit">`:'<div class="hi">'}<div class="hy">${i.year}</div><div class="ht">${i.title}${i.link?'<span class="hl">🔗</span>':''}</div><div class="hd">${i.description.substring(0,60)}...</div>${i.link?'</a>':'</div>'}`).join('')}
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:15px">${historyDate} (${h.items.length} 个事件)</div>
+      ${historyItems}
       <div style="text-align:center;margin-top:20px;font-size:10px;color:#475569">数据来源: 百度百科</div>
       <style>.hi{margin-bottom:15px;border-left:2px solid #a78bfa;padding-left:12px}.hy{color:#a78bfa;font-size:14px;font-weight:bold;margin-bottom:2px}.ht{color:#e2e8f0;font-size:13px;font-weight:500;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between}.hd{color:#94a3b8;font-size:12px;line-height:1.4}.hl{color:#a78bfa;text-decoration:none;font-size:12px;margin-left:8px;opacity:0.7}</style>
     `;
@@ -2342,9 +2588,17 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   // AI资讯
   if (CONFIG.SHOW_MODULES.AI_NEWS && aiNewsData && aiNewsData.success) {
     const ai = aiNewsData.data;
+    const aiDate = escapeHtml(ai.date || '');
+    const aiItems = ai.news.map(i => {
+      const link = sanitizeUrl(i.link);
+      const title = escapeHtml(i.title || '');
+      const detail = escapeHtml(i.detail || '暂无详细描述');
+      const source = escapeHtml(i.source || '');
+      return `${link ? `<a href="${link}" class="ni" style="display:block;text-decoration:none;color:inherit">` : '<div class="ni">'}<div class="nt">${title}</div><div class="nd">${detail}</div><div class="nf"><div class="ns">${source}</div>${link ? '<span class="nl">查看原文</span>' : ''}</div>${link ? '</a>' : '</div>'}`;
+    }).join('');
     const content = `
-      <div style="color:#94a3b8;font-size:12px;margin-bottom:20px">更新日期: ${ai.date}</div>
-      ${ai.news.map(i => `${i.link?`<a href="${i.link}" class="ni" style="display:block;text-decoration:none;color:inherit">`:'<div class="ni">'}<div class="nt">${i.title}</div><div class="nd">${i.detail||'暂无详细描述'}</div><div class="nf"><div class="ns">${i.source}</div>${i.link?'<span class="nl">查看原文</span>':''}</div>${i.link?'</a>':'</div>'}`).join('')}
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:20px">更新日期: ${aiDate}</div>
+      ${aiItems}
       <style>.ni{margin-bottom:20px;background:rgba(59,130,246,0.05);padding:15px;border-radius:12px;border:1px solid rgba(59,130,246,0.1)}.nt{color:#60a5fa;font-size:15px;font-weight:bold;margin-bottom:8px;line-height:1.4}.nd{color:#cbd5e1;font-size:13px;line-height:1.6;margin-bottom:10px}.nf{display:flex;justify-content:space-between;align-items:center}.ns{color:#64748b;font-size:11px}.nl{color:#3b82f6;font-size:11px;text-decoration:none;padding:2px 8px;border:1px solid #3b82f6;border-radius:4px}</style>
     `;
     html += genDrawer('ai-drawer-toggle', '🤖', 'AI 资讯快报', content);
@@ -2352,21 +2606,33 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
   // 黄金/白银 - 抽屉组件 (Tab切换 + Grid布局)
   if (CONFIG.SHOW_MODULES.GOLD && goldData && goldData.success) {
-    const g = goldData.data;
+    const g = goldData.data || {};
+    const goldMetals = Array.isArray(g.metals) ? g.metals : [];
+    const goldStores = Array.isArray(g.stores) ? g.stores : [];
+    const goldBanks = Array.isArray(g.banks) ? g.banks : [];
+    const goldRecycle = Array.isArray(g.recycle) ? g.recycle : [];
     // Compact Helpers
     const R = (n, p, d='') => `<div class="gi"><div class="gh"><span class="gn">${n}</span><div class="gp">${p}</div></div>${d}</div>`;
     const P = (v, u='克', s='¥') => `<span class="gu">${s}</span>${v}<span class="gu">${u?`/${u.replace('元/','')}`:''}</span>`;
     const D = (l, k='') => `<div class="gd ${k}">${l.map(([n,v,c,z])=>`<div><span class="gl">${n}</span><span${c?` style="color:${c}"`:''}${z?` class="${z}"`:''}>${v}</span></div>`).join('')}</div>`;
     
     // Gold Content
-    let gh = `<div class="mt-st">基础金价</div>` + g.metals.map(i => R(i.name, P(i.today_price, i.unit), D([
-        ['最高', i.high_price, '', 'cr'], ['最低', i.low_price, '', 'cgr'], ['售卖', i.sell_price||'-', '', 'cy'],
-        [g.diffLabel||'涨跌', i.diffStr||'-', i.diffColor||'#94a3b8']
-    ], 'gd-2'))).join('');
+    let gh = `<div class="mt-st">基础金价</div>` + (
+      goldMetals.length
+        ? goldMetals.map(i => R(i.name, P(i.today_price, i.unit), D([
+            ['最高', i.high_price, '', 'cr'], ['最低', i.low_price, '', 'cgr'], ['售卖', i.sell_price||'-', '', 'cy'],
+            [g.diffLabel||'涨跌', i.diffStr||'-', i.diffColor||'#94a3b8']
+          ], 'gd-2'))).join('')
+        : '<div style="text-align:center;color:#64748b;padding:20px;">暂无基础金价数据</div>'
+    );
 
-    gh += `<div class="mt-st">品牌金价</div>` + g.stores.slice(0,3).map(i => R(i.brand, P(i.price))).join('');
-    if (g.banks?.length) gh += `<div class="mt-st">银行金价</div>` + g.banks.slice(0,3).map(i => R(i.bank, P(i.price))).join('');
-    if (g.recycle?.length) gh += `<div class="mt-st">回收金价</div>` + g.recycle.map(i => R(i.type, P(i.price))).join('');
+    gh += `<div class="mt-st">品牌金价</div>` + (
+      goldStores.length
+        ? goldStores.slice(0,3).map(i => R(i.brand, P(i.price))).join('')
+        : '<div style="text-align:center;color:#64748b;padding:20px;">暂无品牌金价数据</div>'
+    );
+    if (goldBanks.length) gh += `<div class="mt-st">银行金价</div>` + goldBanks.slice(0,3).map(i => R(i.bank, P(i.price))).join('');
+    if (goldRecycle.length) gh += `<div class="mt-st">回收金价</div>` + goldRecycle.map(i => R(i.type, P(i.price))).join('');
 
     // Silver Content
     let sh = '';
@@ -2637,18 +2903,136 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
   return html;
 }
 
-// 获取运行模式
+// 获取运行模式。定时任务由 workflow 显式传入 RUN_MODE，避免 GitHub Actions 延迟启动后按实际时间误判。
 function getRunMode() {
-  // 获取北京时间的小时
+  if (requestedRunMode) {
+    if (RUN_MODE_NAMES[requestedRunMode]) {
+      console.log(`使用显式运行模式: ${requestedRunMode} (${RUN_MODE_NAMES[requestedRunMode]})`);
+      return requestedRunMode;
+    }
+    console.warn(`忽略无效 RUN_MODE: ${requestedRunMode}`);
+  }
+
+  // 本地手动或 RUN_MODE=auto：按实际北京时间判断。
   const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
   const hour = now.getHours();
 
   if (hour < 10) {
-    return 'morning'; // 早安推送 (7:30)
+    return 'morning'; // 早安推送
   } else if (hour >= 10 && hour < 14) {
-    return 'midday'; // 午间推送 (11:30)
+    return 'midday'; // 午间推送
   } else {
-    return 'evening'; // 晚间推送 (17:00)
+    return 'evening'; // 晚间推送
+  }
+}
+
+function buildDataTasks({ token, timeInfo }) {
+  return [
+    { key: 'weather', name: '实时天气', enabled: CONFIG.SHOW_MODULES.WEATHER, required: true, timeout: 15000, fetcher: () => getCurrentWeather() },
+    { key: 'forecast', name: '天气预报', enabled: CONFIG.SHOW_MODULES.WEATHER, required: true, timeout: 15000, validate: result => Array.isArray(result.data) && result.data.length > 0, fetcher: () => getWeatherForecast() },
+    { key: 'precipitation', name: '分钟级降水', enabled: CONFIG.SHOW_MODULES.WEATHER && !!token, timeout: 15000, fetcher: () => getMinutePrecipitation(token) },
+    { key: 'alert', name: '天气预警', enabled: CONFIG.SHOW_MODULES.WEATHER && !!token, timeout: 15000, fetcher: () => getWeatherAlerts(token) },
+    { key: 'luck', name: '今日运势', enabled: CONFIG.SHOW_MODULES.LUCK, timeout: 12000, fetcher: () => getLuck() },
+    { key: 'history', name: '历史上的今天', enabled: CONFIG.SHOW_MODULES.HISTORY, timeout: 12000, fetcher: () => getHistoryToday() },
+    { key: 'rate', name: '汇率信息', enabled: CONFIG.SHOW_MODULES.EXCHANGE, timeout: 12000, fetcher: () => getExchangeRate() },
+    { key: 'gold', name: '黄金价格', enabled: CONFIG.SHOW_MODULES.GOLD, timeout: 18000, fetcher: () => getGoldPrice() },
+    { key: 'silver', name: '白银数据', enabled: CONFIG.SHOW_MODULES.GOLD, timeout: 18000, fetcher: () => getSilverData() },
+    { key: 'fuel', name: '汽油价格', enabled: CONFIG.SHOW_MODULES.FUEL, timeout: 18000, fetcher: () => getFuelPrice() },
+    { key: 'moyu', name: '摸鱼日报', enabled: CONFIG.SHOW_MODULES.MOYU, timeout: 12000, fetcher: () => getMoyuDaily() },
+    { key: 'aiNews', name: 'AI资讯', enabled: CONFIG.SHOW_MODULES.AI_NEWS, timeout: 12000, fetcher: () => getAiNews() },
+    { key: 'news60s', name: '60秒读懂世界', enabled: CONFIG.SHOW_MODULES.NEWS_60S, timeout: 18000, fetcher: () => get60sNews() },
+    { key: 'bing', name: 'Bing壁纸', enabled: CONFIG.SHOW_MODULES.BING_WALLPAPER, timeout: 12000, fetcher: () => getBingWallpaper() },
+    { key: 'kfc', name: 'KFC文案', enabled: CONFIG.SHOW_MODULES.KFC && timeInfo.isThursday, timeout: 10000, fetcher: () => getKfcContent(timeInfo.isThursday) },
+    { key: 'hitokoto', name: '一言', enabled: CONFIG.SHOW_MODULES.yiYan, timeout: 12000, validate: result => !!result.hitokoto, fetcher: () => getHitokoto() },
+    ...HOT_LIST_DEFINITIONS.map(def => ({
+      key: def.key,
+      name: def.taskName,
+      enabled: CONFIG.SHOW_MODULES.HOT_LIST[def.configKey],
+      timeout: 30000,
+      group: 'hotList',
+      validate: result => getHotListItems(def, result).length > 0,
+      fetcher: def.fetcher
+    }))
+  ];
+}
+
+function resolveFallbackResult(result) {
+  return result?.success === false && result?.fallback ? result.fallback : result;
+}
+
+function isValidHotListItem(def, item) {
+  if (!item || typeof item !== 'object') return false;
+  try {
+    const mapped = def.map(item);
+    return Boolean(mapped && mapped.title);
+  } catch (error) {
+    return false;
+  }
+}
+
+function getHotListItems(def, result) {
+  if (!result?.success || !result.data) return [];
+  const items = def.getItems(result.data);
+  return Array.isArray(items) ? items.filter(item => isValidHotListItem(def, item)) : [];
+}
+
+function isTaskSuccessful(task, result) {
+  const resolvedResult = resolveFallbackResult(result);
+  return resolvedResult?.success === true && (!task.validate || task.validate(resolvedResult));
+}
+
+async function runDataTasks(dataTasks) {
+  const enabledTasks = dataTasks.filter(task => task.enabled);
+  const taskResults = await Promise.all(
+    enabledTasks.map(task => safeAsyncCall(task.fetcher, task.name, task.timeout))
+  );
+  const dataResults = Object.fromEntries(dataTasks.map(task => [task.key, { success: false, skipped: true }]));
+
+  enabledTasks.forEach((task, index) => {
+    dataResults[task.key] = taskResults[index];
+  });
+
+  return { enabledTasks, dataResults };
+}
+
+function shouldApplyRunModeModules() {
+  return isScheduled || hasRunModeOverride;
+}
+
+function applyRunModeModules(runMode) {
+  // 先重置所有模块为 false（除了始终开启的）
+  const alwaysOn = ['LUCK', 'BING_WALLPAPER', 'yiYan', 'KFC'];
+  for (const key in CONFIG.SHOW_MODULES) {
+    if (!alwaysOn.includes(key)) {
+      if (typeof CONFIG.SHOW_MODULES[key] === 'object') {
+        for (const subKey in CONFIG.SHOW_MODULES[key]) {
+          CONFIG.SHOW_MODULES[key][subKey] = false;
+        }
+      } else {
+        CONFIG.SHOW_MODULES[key] = false;
+      }
+    }
+  }
+
+  if (runMode === 'morning') {
+    console.log('🌅 执行早安推送模式: 天气 + 基础 + 60s新闻');
+    CONFIG.SHOW_MODULES.WEATHER = true;
+    CONFIG.SHOW_MODULES.NEWS_60S = true;
+    CONFIG.SHOW_MODULES.QR_CODE = true;
+  } else if (runMode === 'midday') {
+    console.log('☀️ 执行午间推送模式: 抽屉内容');
+    CONFIG.SHOW_MODULES.HISTORY = true;
+    CONFIG.SHOW_MODULES.EXCHANGE = true;
+    CONFIG.SHOW_MODULES.GOLD = true;
+    CONFIG.SHOW_MODULES.FUEL = true;
+    CONFIG.SHOW_MODULES.AI_NEWS = true;
+    CONFIG.SHOW_MODULES.KFC = false;
+  } else if (runMode === 'evening') {
+    console.log('🌇 执行晚间推送模式: 热点榜单');
+    for (const subKey in CONFIG.SHOW_MODULES.HOT_LIST) {
+      CONFIG.SHOW_MODULES.HOT_LIST[subKey] = true;
+    }
+    CONFIG.SHOW_MODULES.QR_CODE = false;
   }
 }
 
@@ -2659,50 +3043,9 @@ async function main() {
   console.log(`触发方式: ${isScheduled ? '定时任务' : '手动触发'} `);
   console.log(`运行模式: ${runMode}`);
 
-  // 根据模式调整模块开关 (仅对定时任务生效)
-  if (isScheduled) {
-    // 先重置所有模块为false (除了始终开启的)
-    const alwaysOn = ['LUCK', 'BING_WALLPAPER', 'yiYan', 'KFC'];
-    for (const key in CONFIG.SHOW_MODULES) {
-      if (!alwaysOn.includes(key)) {
-        if (typeof CONFIG.SHOW_MODULES[key] === 'object') {
-           // HOT_LIST object
-           for (const subKey in CONFIG.SHOW_MODULES[key]) {
-             CONFIG.SHOW_MODULES[key][subKey] = false;
-           }
-        } else {
-           CONFIG.SHOW_MODULES[key] = false;
-        }
-      }
-    }
-
-    // 根据模式开启特定模块
-    if (runMode === 'morning') {
-      console.log('🌅 执行早安推送模式: 天气 + 基础 + 60s新闻');
-      CONFIG.SHOW_MODULES.WEATHER = true;
-      CONFIG.SHOW_MODULES.NEWS_60S = true;
-      CONFIG.SHOW_MODULES.QR_CODE = true;
-    } else if (runMode === 'midday') {
-      console.log('☀️ 执行午间推送模式: 抽屉内容');
-      // 开启右侧按钮内容
-      CONFIG.SHOW_MODULES.HISTORY = true;
-      CONFIG.SHOW_MODULES.EXCHANGE = true;
-      CONFIG.SHOW_MODULES.GOLD = true;
-      CONFIG.SHOW_MODULES.FUEL = true;
-      CONFIG.SHOW_MODULES.AI_NEWS = true;
-      CONFIG.SHOW_MODULES.KFC = false;
-    } else if (runMode === 'evening') {
-      console.log('🌇 执行晚间推送模式: 热点榜单');
-      // 开启热点榜单
-      // 注意：CONFIG.SHOW_MODULES.HOT_LIST 是对象，不能直接设为true
-      // 我们需要开启其中的子项。这里假设全部开启，或者根据 config.js 原本的意图? 
-      // 用户说 "延时任务的下午5点发送的是HOT_LIST"
-      // 我们遍历 HOT_LIST 并开启所有支持的榜单
-      for (const subKey in CONFIG.SHOW_MODULES.HOT_LIST) {
-         CONFIG.SHOW_MODULES.HOT_LIST[subKey] = true;
-      }
-      CONFIG.SHOW_MODULES.QR_CODE = false;
-    }
+  // 根据模式调整模块开关。定时任务和显式 RUN_MODE 都应用固定模式，避免手动补发/预览只改日志不改内容。
+  if (shouldApplyRunModeModules()) {
+    applyRunModeModules(runMode);
   }
 
   try {
@@ -2712,189 +3055,121 @@ async function main() {
     console.log(`星期几: ${timeInfo.dayOfWeek} `);
     console.log(`是否是星期四: ${timeInfo.isThursday} `);
 
-    // 2. 获取和风天气Token
-    const token = await getValidHefengToken();
+    // 2. 获取和风天气Token（仅和风增强天气接口启用且配置完整时需要）
+    let token = null;
+    if (CONFIG.SHOW_MODULES.WEATHER) {
+      if (hasHefengConfig()) {
+        try {
+          token = await getValidHefengToken();
+        } catch (tokenError) {
+          console.warn(`天气模块已启用，但和风天气Token获取失败，跳过分钟级降水和天气预警: ${tokenError.message}`);
+        }
+      } else {
+        console.warn('天气模块已启用，但 HEFENG_* 配置不完整，跳过分钟级降水和天气预警');
+      }
+    } else {
+      console.log('天气模块未启用，跳过和风天气Token获取');
+    }
 
-    // Helper for conditional fetching
-    const fetchIf = (condition, promise) => {
-        return condition ? promise : Promise.resolve({ success: false, skipped: true });
-    };
-
-    // 3. 并行获取数据（提高效率，使用安全包装器和超时控制）
+    // 3. 构建并并行获取数据
     console.log('开始并行获取所有数据...');
     const startTime = Date.now();
-    
-    const [
-      weatherResult,
-      forecastResult,
-      precipitationResult,
-      alertResult,
-      luckResult,
-      historyResult,
-      rateResult,
-      goldResult,
-      silverResult,
-      fuelResult,
-      moyuResult,
-      aiNewsResult,
-      news60sResult,
-      bingResult,
-      kfcResult,
-      hitokotoResult,
-      weiboResult,
-      toutiaoResult,
-      zhihuResult,
-      maoyanMovieResult,
-      maoyanTvResult,
-      maoyanWebResult,
-      douyinResult,
-      biliResult,
-      baiduTiebaResult
-    ] = await Promise.allSettled([
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getCurrentWeather()), '实时天气', 15000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherForecast()), '天气预报', 15000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getMinutePrecipitation(token)), '分钟级降水', 15000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.WEATHER, getWeatherAlerts(token)), '天气预警', 15000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.LUCK, getLuck()), '今日运势', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HISTORY, getHistoryToday()), '历史上的今天', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.EXCHANGE, getExchangeRate()), '汇率信息', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.GOLD, getGoldPrice()), '黄金价格', 18000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.GOLD, getSilverData()), '白银数据', 18000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.FUEL, getFuelPrice()), '汽油价格', 18000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.MOYU, getMoyuDaily()), '摸鱼日报', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.AI_NEWS, getAiNews()), 'AI资讯', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.NEWS_60S, get60sNews()), '60秒读懂世界', 18000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.BING_WALLPAPER, getBingWallpaper()), 'Bing壁纸', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.KFC, getKfcContent(timeInfo.isThursday)), 'KFC文案', 10000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.yiYan, getHitokoto()), '一言', 12000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEIBO, getWeiboHot()), '微博热搜', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TOUTIAO, getToutiaoHot()), '头条热搜', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.ZHIHU, getZhihuHot()), '知乎热榜', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.MOVIE, getMaoyanMovie()), '猫眼电影', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TV, getMaoyanTv()), '猫眼电视', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.WEB, getMaoyanWeb()), '猫眼网剧', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.DOUYIN, getDouyinHot()), '抖音热搜', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.BILI, getBiliHot()), 'B站热搜', 30000),
-      safeAsyncCall(() => fetchIf(CONFIG.SHOW_MODULES.HOT_LIST.TIEBA, getBaiduTieba()), '百度贴吧', 30000)
-    ]);
-    
+    const dataTasks = buildDataTasks({ token, timeInfo });
+    const { enabledTasks, dataResults } = await runDataTasks(dataTasks);
     const endTime = Date.now();
     console.log(`所有数据获取完成，总耗时: ${((endTime - startTime) / 1000).toFixed(2)}秒`);
 
-    const weatherData = weatherResult.status === 'fulfilled' ? weatherResult.value : { success: false, error: weatherResult.reason };
-    const forecastData = forecastResult.status === 'fulfilled' ? forecastResult.value : { success: false, error: forecastResult.reason };
-    const precipitationData = precipitationResult.status === 'fulfilled' ? precipitationResult.value : { success: false, error: precipitationResult.reason };
-    const alertData = alertResult.status === 'fulfilled' ? alertResult.value : { success: false, data: { hasAlerts: false } };
-    const luckData = luckResult.status === 'fulfilled' ? luckResult.value : { success: false, error: luckResult.reason };
-    const historyData = historyResult.status === 'fulfilled' ? historyResult.value : { success: false, error: historyResult.reason };
-    const rateData = rateResult.status === 'fulfilled' ? rateResult.value : { success: false, error: rateResult.reason };
-    const goldData = goldResult.status === 'fulfilled' ? goldResult.value : { success: false, error: goldResult.reason };
-    const silverData = silverResult.status === 'fulfilled' ? silverResult.value : { success: false, error: silverResult.reason };
-    const fuelData = fuelResult.status === 'fulfilled' ? fuelResult.value : { success: false, error: fuelResult.reason };
-    const moyuData = moyuResult.status === 'fulfilled' ? moyuResult.value : { success: false, error: moyuResult.reason };
-    const aiNewsData = aiNewsResult.status === 'fulfilled' ? aiNewsResult.value : { success: false, error: aiNewsResult.reason };
-    const news60sData = news60sResult.status === 'fulfilled' ? news60sResult.value : { success: false, error: news60sResult.reason };
-    const bingData = bingResult.status === 'fulfilled' ? bingResult.value : { success: false, error: bingResult.reason };
-    const kfcContent = kfcResult.status === 'fulfilled' ? kfcResult.value : { success: false, content: '' };
-    const hitokotoData = hitokotoResult.status === 'fulfilled' ? hitokotoResult.value : null;
+    const resolvedDataResults = Object.fromEntries(
+      Object.entries(dataResults).map(([key, result]) => [key, resolveFallbackResult(result)])
+    );
 
-    const hotData = {
-        weibo: weiboResult.status === 'fulfilled' ? weiboResult.value : { success: false },
-        toutiao: toutiaoResult.status === 'fulfilled' ? toutiaoResult.value : { success: false },
-        zhihu: zhihuResult.status === 'fulfilled' ? zhihuResult.value : { success: false },
-        maoyanMovie: maoyanMovieResult.status === 'fulfilled' ? maoyanMovieResult.value : { success: false },
-        maoyanTv: maoyanTvResult.status === 'fulfilled' ? maoyanTvResult.value : { success: false },
-        maoyanWeb: maoyanWebResult.status === 'fulfilled' ? maoyanWebResult.value : { success: false },
-        douyin: douyinResult.status === 'fulfilled' ? douyinResult.value : { success: false },
-        bili: biliResult.status === 'fulfilled' ? biliResult.value : { success: false },
-        baiduTieba: baiduTiebaResult.status === 'fulfilled' ? baiduTiebaResult.value : { success: false }
-    };
+    const weatherData = resolvedDataResults.weather;
+    const forecastData = resolvedDataResults.forecast;
+    const precipitationData = resolvedDataResults.precipitation;
+    const alertData = resolvedDataResults.alert;
+    const luckData = resolvedDataResults.luck;
+    const historyData = resolvedDataResults.history;
+    const rateData = resolvedDataResults.rate;
+    const goldData = resolvedDataResults.gold;
+    const silverData = resolvedDataResults.silver;
+    const fuelData = resolvedDataResults.fuel;
+    const moyuData = resolvedDataResults.moyu;
+    const aiNewsData = resolvedDataResults.aiNews;
+    const news60sData = resolvedDataResults.news60s;
+    const bingData = resolvedDataResults.bing;
+    const kfcContent = resolvedDataResults.kfc || { success: false, content: '' };
+    const hitokotoData = resolvedDataResults.hitokoto;
+
+    const hotData = Object.fromEntries(
+      dataTasks
+        .filter(task => task.group === 'hotList')
+        .map(task => [task.key, resolvedDataResults[task.key]])
+    );
 
     // 打印数据获取统计
-    const successCount = [
-      weatherData, forecastData, precipitationData, luckData, historyData, 
-      rateData, goldData, silverData, fuelData, moyuData, aiNewsData, 
-      news60sData, bingData, kfcContent, hitokotoData,
-      ...Object.values(hotData)
-    ].filter(d => d && d.success).length;
-    
-    const totalCount = 25;
-    console.log(`数据获取统计: ${successCount}/${totalCount} 成功`);
-    
-    // 打印失败的接口
-    const failedApis = [];
-    if (!weatherData.success) failedApis.push('实时天气');
-    if (!forecastData.success) failedApis.push('天气预报');
-    if (!precipitationData.success) failedApis.push('分钟级降水');
-    if (!luckData.success) failedApis.push('今日运势');
-    if (!historyData.success) failedApis.push('历史上的今天');
-    if (!rateData.success) failedApis.push('汇率信息');
-    if (!goldData.success) failedApis.push('黄金价格');
-    if (!silverData.success) failedApis.push('白银数据');
-    if (!fuelData.success) failedApis.push('汽油价格');
-    if (!moyuData.success) failedApis.push('摸鱼日报');
-    if (!aiNewsData.success) failedApis.push('AI资讯');
-    if (!news60sData.success) failedApis.push('60秒读懂世界');
-    if (!bingData.success) failedApis.push('Bing壁纸');
-    if (!kfcContent.success && timeInfo.isThursday) failedApis.push('KFC文案');
-    if (!hitokotoData) failedApis.push('一言');
-    if (!hotData.weibo.success) failedApis.push('微博热搜');
-    if (!hotData.toutiao.success) failedApis.push('头条热搜');
-    if (!hotData.zhihu.success) failedApis.push('知乎热榜');
-    if (!hotData.maoyanMovie.success) failedApis.push('猫眼电影');
-    if (!hotData.maoyanTv.success) failedApis.push('猫眼电视');
-    if (!hotData.maoyanWeb.success) failedApis.push('猫眼网剧');
-    if (!hotData.douyin.success) failedApis.push('抖音热搜');
-    if (!hotData.bili.success) failedApis.push('B站热搜');
-    if (!hotData.baiduTieba.success) failedApis.push('百度贴吧');
-    
+    const successCount = enabledTasks.filter(task => isTaskSuccessful(task, dataResults[task.key])).length;
+    console.log(`已启用接口成功统计: ${successCount}/${enabledTasks.length} 成功`);
+
+    const failedApis = enabledTasks
+      .filter(task => !isTaskSuccessful(task, dataResults[task.key]))
+      .map(task => {
+        const error = dataResults[task.key]?.error ? `: ${dataResults[task.key].error}` : ': 数据校验未通过';
+        return `${task.name}${error}`;
+      });
+
     if (failedApis.length > 0) {
-      console.warn(`⚠️  以下接口获取失败: ${failedApis.join(', ')}`);
+      console.warn(`⚠️  以下已启用接口获取失败: ${failedApis.join(', ')}`);
+    } else {
+      console.log('✅ 所有已启用接口均已完成并返回成功状态');
     }
 
-    // 4. 检查关键数据
-    if (!hitokotoData) {
-      throw new Error('一言数据获取失败，这是关键数据');
+    const historyUpdates = [
+      rateData?.historyUpdate,
+      goldData?.historyUpdate
+    ].filter(Boolean);
+
+    // 4. 检查关键数据（基于 task 元数据 required/validate）
+    const requiredTasks = dataTasks.filter(task => task.required && task.enabled);
+    const failedRequiredTasks = requiredTasks.filter(task => !isTaskSuccessful(task, dataResults[task.key]));
+
+    if (failedRequiredTasks.length > 0) {
+      const failedNames = failedRequiredTasks.map(task => task.name).join(', ');
+      throw new Error(`关键数据获取失败: ${failedNames}，取消推送以避免内容缺失`);
     }
 
-    // 4.5. 等待所有数据完全处理完成（添加短暂延迟确保数据稳定）
-    console.log('等待数据稳定...');
-    await delay(500);
-
-    // 5. 获取UID
-    console.log('正在获取UID...');
-    const uidResult = await getLatestUid();
-    if (!uidResult.success) {
-      throw new Error(`获取UID失败: ${uidResult.error} `);
+    const enabledHotListTasks = enabledTasks.filter(task => task.group === 'hotList');
+    const hotListSuccessCount = enabledHotListTasks.filter(task => isTaskSuccessful(task, dataResults[task.key])).length;
+    if (enabledHotListTasks.length > 0 && hotListSuccessCount === 0) {
+      throw new Error('热点榜单已启用，但所有热榜接口均获取失败，取消推送以避免内容缺失');
     }
-    console.log(`✅ UID获取成功: ${uidResult.uid}`);
+
+    // 5. 获取UID（预览模式不需要真实 UID）
+    let uidResult = { success: true, uid: 'DRY_RUN' };
+    if (isDryRun) {
+      console.log('🧪 预览模式，跳过UID获取和实际发送');
+    } else {
+      console.log('正在获取UID...');
+      uidResult = await getLatestUid();
+      if (!uidResult.success) {
+        throw new Error(`获取UID失败: ${uidResult.error} `);
+      }
+      console.log(`✅ UID获取成功: ${maskUid(uidResult.uid)}`);
+    }
 
     // 6. 数据完整性验证
     console.log('开始数据完整性验证...');
-    const dataValidation = {
-      timeInfo: !!timeInfo && !!timeInfo.dateTime,
-      hitokotoData: !!hitokotoData && !!hitokotoData.hitokoto,
-      weatherData: weatherData && typeof weatherData === 'object',
-      forecastData: forecastData && typeof forecastData === 'object',
-      precipitationData: precipitationData && typeof precipitationData === 'object',
-      alertData: alertData && typeof alertData === 'object',
-      luckData: luckData && typeof luckData === 'object',
-      historyData: historyData && typeof historyData === 'object',
-      rateData: rateData && typeof rateData === 'object',
-      goldData: goldData && typeof goldData === 'object',
-      silverData: silverData && typeof silverData === 'object',
-      fuelData: fuelData && typeof fuelData === 'object',
-      moyuData: moyuData && typeof moyuData === 'object',
-      aiNewsData: aiNewsData && typeof aiNewsData === 'object',
-      news60sData: news60sData && typeof news60sData === 'object',
-      bingData: bingData && typeof bingData === 'object',
-      kfcContent: kfcContent && typeof kfcContent === 'object',
-      hotData: hotData && typeof hotData === 'object'
-    };
+    const validationTargets = [
+      { key: 'timeInfo', valid: !!timeInfo && !!timeInfo.dateTime },
+      ...enabledTasks.map(task => ({
+        key: task.key,
+        valid: validateDataIntegrity(resolvedDataResults[task.key], task.name)
+      })),
+      { key: 'hotData', valid: hotData && typeof hotData === 'object' }
+    ];
 
-    const invalidData = Object.entries(dataValidation)
-      .filter(([key, valid]) => !valid)
-      .map(([key]) => key);
+    const invalidData = validationTargets
+      .filter(({ valid }) => !valid)
+      .map(({ key }) => key);
 
     if (invalidData.length > 0) {
       console.warn(`⚠️  以下数据对象无效: ${invalidData.join(', ')}`);
@@ -2949,8 +3224,8 @@ async function main() {
       });
       console.log(`✅ HTML压缩完成 - 压缩前: ${htmlContent.length} 字符, 压缩后: ${minifiedHtml.length} 字符`);
       
-      if (minifiedHtml.length > 40000) {
-        console.warn(`⚠️  警告: HTML内容超过40000字符限制 (${minifiedHtml.length})`);
+      if (minifiedHtml.length > MAX_WXPUSHER_CONTENT_LENGTH) {
+        console.warn(`⚠️  警告: HTML内容超过${MAX_WXPUSHER_CONTENT_LENGTH}字符限制 (${minifiedHtml.length})`);
       }
     } catch (minifyError) {
       console.error('❌ HTML压缩失败:', minifyError);
@@ -2958,16 +3233,70 @@ async function main() {
       minifiedHtml = htmlContent;
     }
 
-    // 9. 最终发送前再次确认
-    console.log('准备发送消息...');
-    await delay(300); // 短暂延迟确保所有异步操作完成
+    const taskReport = {
+      dryRun: isDryRun,
+      scheduled: isScheduled,
+      runMode,
+      generatedAt: new Date().toISOString(),
+      summary: timeInfo.dateTime,
+      htmlLength: htmlContent.length,
+      minifiedHtmlLength: minifiedHtml.length,
+      wxpusherLimit: MAX_WXPUSHER_CONTENT_LENGTH,
+      overLimit: minifiedHtml.length > MAX_WXPUSHER_CONTENT_LENGTH,
+      enabledTasks: enabledTasks.map(task => ({
+        key: task.key,
+        name: task.name,
+        success: isTaskSuccessful(task, dataResults[task.key]),
+        skipped: dataResults[task.key]?.skipped === true,
+        error: dataResults[task.key]?.error || ''
+      })),
+      failedApis,
+      uid: maskUid(uidResult.uid)
+    };
 
-    // 10. 发送消息
-    console.log(`正在发送消息到 UID: ${uidResult.uid}...`);
+    if (isDryRun) {
+      const outputs = savePreviewArtifacts({
+        reason: 'dry-run',
+        htmlContent,
+        minifiedHtml,
+        report: taskReport,
+        dataResults
+      });
+      console.log('🧪 预览模式完成，已生成预览文件，不发送 WxPusher');
+      console.log(`   HTML: ${outputs.htmlPath}`);
+      console.log(`   压缩HTML: ${outputs.minifiedHtmlPath}`);
+      console.log(`   报告: ${outputs.reportPath}`);
+      console.log(`   原始数据: ${outputs.rawDataPath}`);
+      console.log('========== 每日消息推送预览执行完成 ==========');
+      return;
+    }
+
+    if (minifiedHtml.length > MAX_WXPUSHER_CONTENT_LENGTH) {
+      const outputs = savePreviewArtifacts({
+        reason: 'over-limit',
+        htmlContent,
+        minifiedHtml,
+        report: taskReport,
+        dataResults
+      });
+      console.error(`❌ HTML内容超过WxPusher限制，已取消发送并保存预览: ${minifiedHtml.length}/${MAX_WXPUSHER_CONTENT_LENGTH}`);
+      console.error(`   报告: ${outputs.reportPath}`);
+      throw new Error('HTML内容超过WxPusher限制，已取消发送');
+    }
+
+    // 9. 发送消息
+    console.log('准备发送消息...');
+    console.log(`正在发送消息到 UID: ${maskUid(uidResult.uid)}...`);
     const sendResult = await sendMessage(minifiedHtml, timeInfo.dateTime, uidResult.uid);
 
     if (sendResult.success) {
       console.log(`✅ 消息发送成功！消息ID: ${sendResult.messageId || '未知'}`);
+      if (historyUpdates.length > 0) {
+        saveHistoryData(mergeHistoryUpdates(historyUpdates));
+      }
+      if (uidResult.uidDataToSave) {
+        saveLatestUid(uidResult.uidDataToSave);
+      }
     } else {
       throw new Error('消息发送失败');
     }

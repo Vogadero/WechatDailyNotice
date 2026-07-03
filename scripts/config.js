@@ -17,6 +17,7 @@ const CONFIG = {
 
     // 其他配置
     WXPUSHER_APP_TOKEN: process.env.WXPUSHER_APP_TOKEN,
+    WXPUSHER_UID: process.env.WXPUSHER_UID,
     LOCATION: '余杭',
     WEATHER_API_BASE: 'https://60s.viki.moe/v2',
     KFC_API: 'https://60s.viki.moe/v2/kfc',
@@ -43,8 +44,19 @@ const CONFIG = {
     LOCATION_LON: '119.97874',
     LOCATION_LAT: '30.27371',
 
-    // Token缓存文件
-    TOKEN_CACHE_FILE: path.join(__dirname, '../data/hefeng_token.json'),
+    // Token缓存文件：CI 中放到 runner 临时目录，避免在仓库工作区落盘敏感 token
+    TOKEN_CACHE_FILE: process.env.HEFENG_TOKEN_CACHE_FILE || (
+        process.env.RUNNER_TEMP
+            ? path.join(process.env.RUNNER_TEMP, 'hefeng_token.json')
+            : path.join(__dirname, '../data/hefeng_token.json')
+    ),
+
+    // UID 缓存文件：与 token 缓存一致，CI 中放到 runner 临时目录，避免在仓库工作区落盘运行态 UID
+    UID_CACHE_FILE: process.env.WXPUSHER_UID_CACHE_FILE || (
+        process.env.RUNNER_TEMP
+            ? path.join(process.env.RUNNER_TEMP, 'latest_uid.json')
+            : path.join(__dirname, '../data/latest_uid.json')
+    ),
 
     // Token提前刷新时间（秒）
     TOKEN_REFRESH_BEFORE_EXPIRE: 300, // 提前5分钟刷新
