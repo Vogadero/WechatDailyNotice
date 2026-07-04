@@ -3,6 +3,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const minify = require('html-minifier').minify;
+const { maskSensitiveValue } = require('./utils');
 
 // 命令行参数
 const cliArgs = process.argv.slice(2);
@@ -141,12 +142,6 @@ async function safeAsyncCall(asyncFn, name, timeout = 25000) {
   }
 }
 
-function maskSensitiveValue(value, visiblePrefix = 4, visibleSuffix = 4) {
-  if (!value || typeof value !== 'string') return '';
-  if (value.length <= visiblePrefix + visibleSuffix) return `${value.slice(0, visiblePrefix)}***`;
-  return `${value.slice(0, visiblePrefix)}...${value.slice(-visibleSuffix)}`;
-}
-
 function maskUid(uid) {
   if (!uid || typeof uid !== 'string') return '';
   if (uid.length <= 12) return `${uid.slice(0, 3)}***`;
@@ -194,9 +189,14 @@ function savePreviewArtifacts({ reason, htmlContent, minifiedHtml, report, dataR
   fs.writeFileSync(htmlPath, htmlContent, 'utf8');
   fs.writeFileSync(minifiedHtmlPath, minifiedHtml, 'utf8');
   fs.writeFileSync(reportPath, JSON.stringify(report, null, 2), 'utf8');
-  fs.writeFileSync(rawDataPath, JSON.stringify(dataResults, null, 2), 'utf8');
 
-  return { htmlPath, minifiedHtmlPath, reportPath, rawDataPath };
+  // 原始接口数据可能包含第三方响应细节，默认不写入 artifact；仅调试时显式开启。
+  if (isTruthy(process.env.DEBUG_RAW_DATA)) {
+    fs.writeFileSync(rawDataPath, JSON.stringify(dataResults, null, 2), 'utf8');
+    return { htmlPath, minifiedHtmlPath, reportPath, rawDataPath };
+  }
+
+  return { htmlPath, minifiedHtmlPath, reportPath };
 }
 
 // 并发限制器 - 允许同时进行多个请求，但限制总并发数，防止服务器压力过大
@@ -1706,13 +1706,18 @@ async function sendMessage(htmlContent, summary, uid) {
       timeout: 15000
     });
 
-    console.log('发送结果:', JSON.stringify(response.data, null, 2));
+    const messageId = response.data.data?.[0]?.messageContentId;
+    console.log('发送结果摘要:', {
+      code: response.data.code,
+      msg: response.data.msg || '',
+      messageId: messageId || '未知'
+    });
 
     if (response.data.code === 1000) {
       console.log('✅ 消息发送成功！');
       return {
         success: true,
-        messageId: response.data.data[0]?.messageContentId
+        messageId
       };
     } else {
       throw new Error(`发送失败: ${response.data.msg || '未知错误'}`);
@@ -1720,7 +1725,11 @@ async function sendMessage(htmlContent, summary, uid) {
   } catch (error) {
     console.error('发送消息失败:', error.message);
     if (error.response) {
-      console.error('错误响应:', error.response.data);
+      console.error('错误响应摘要:', {
+        status: error.response.status,
+        code: error.response.data?.code,
+        msg: error.response.data?.msg || error.response.data?.message || '未知错误'
+      });
     }
     throw new Error(`发送消息失败: ${error.message}`);
   }
@@ -3266,7 +3275,9 @@ async function main() {
       console.log(`   HTML: ${outputs.htmlPath}`);
       console.log(`   压缩HTML: ${outputs.minifiedHtmlPath}`);
       console.log(`   报告: ${outputs.reportPath}`);
-      console.log(`   原始数据: ${outputs.rawDataPath}`);
+      if (outputs.rawDataPath) {
+        console.log(`   原始数据: ${outputs.rawDataPath}`);
+      }
       console.log('========== 每日消息推送预览执行完成 ==========');
       return;
     }

@@ -26,8 +26,10 @@
 ### 1. 安装依赖
 
 ```bash
-npm install
+npm ci
 ```
+
+开发时需要更新依赖可使用 `npm install`；复现 CI 环境建议优先使用 `npm ci`。
 
 ### 2. 配置环境变量
 
@@ -87,7 +89,8 @@ npm run preview:evening
 - `*.html`: 未压缩 HTML
 - `*.min.html`: 压缩后 HTML
 - `*.report.json`: 任务摘要、HTML 长度、失败接口等
-- `*.raw-data.json`: 本次数据结果
+
+默认不写出完整原始接口数据，避免预览 artifact 暴露第三方响应细节；如需排查，可设置 `DEBUG_RAW_DATA=true` 额外生成 `*.raw-data.json`。
 
 GitHub Actions 手动触发默认 `dry_run=true`，会上传 `dist/` 预览产物并跳过发送；确认内容无误后再选择 `dry_run=false` 真实发送。
 
@@ -103,13 +106,18 @@ npm test
 
 ```
 WechatDailyNotice/
+├── .github/workflows/
+│   └── daily-message.yml # GitHub Actions 定时/手动推送流程
 ├── scripts/
 │   ├── config.js          # 全局配置文件 (API Key, 开关等)
+│   ├── utils.js           # 日志脱敏等共享工具
 │   ├── send-message.js    # 主程序入口，包含所有逻辑
 │   └── generate-token.js  # Token 生成工具 (内部调用)
 ├── data/                  # 本地运行缓存和历史数据（token/UID 缓存不提交）
+├── dist/                  # 本地/CI 预览产物（不提交）
 ├── APIS.api               # 接口文档
 ├── LICENSE                # 授权协议
+├── package-lock.json      # 锁定依赖版本
 └── package.json           # 项目依赖配置
 ```
 
