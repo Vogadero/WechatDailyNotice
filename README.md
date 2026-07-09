@@ -141,13 +141,13 @@ SHOW_MODULES: {
 
 ## 📱 推送模式
 
-脚本内置三种推送模式。GitHub Actions 定时任务会根据触发的 cron 表达式锁定模式，因此即使 Actions 延迟启动，也不会因为实际启动时间变晚而误判为其他模式：
+脚本内置三种推送模式。GitHub Actions 定时任务会根据触发的 cron 表达式锁定模式，因此即使 Actions 延迟启动，也不会因为实际启动时间变晚而误判为其他模式。GitHub Actions 的 `schedule` 不是强实时调度，可能排队延迟；午间和晚间 cron 已适当前移用于抵消常见延迟，如需严格准点可改用外部定时器触发 `workflow_dispatch`。
 
 | 触发时间（北京时间） | cron（UTC） | 模式 |
 |---:|---|---|
 | 07:15 | `15 23 * * *` | `morning` 早安推送 |
-| 10:30 | `30 2 * * *` | `midday` 午间推送 |
-| 16:20 | `20 8 * * *` | `evening` 晚间推送 |
+| 09:30（用于补偿 Actions 排队延迟，目标约 10:30 前后送达） | `30 1 * * *` | `midday` 午间推送 |
+| 15:20（用于补偿 Actions 排队延迟，目标约 16:20 前后送达） | `20 7 * * *` | `evening` 晚间推送 |
 
 本地普通 `npm run preview` 使用 `scripts/config.js` 中的默认模块开关；GitHub Actions 定时任务、手动选择 `run_mode` 或本地显式设置 `RUN_MODE` 时，会应用对应的早/中/晚模块开关。
 

@@ -5,10 +5,10 @@ on:
   schedule:
     # 每天北京时间07:15运行 (UTC 23:15，前一日) - 避开整点高峰
     - cron: '15 23 * * *'
-    # 每天北京时间10:30运行 (UTC 02:30) - 午间任务
-    - cron: '30 2 * * *'
-    # 每天北京时间16:20运行 (UTC 08:20) - 延时任务2
-    - cron: '20 8 * * *'
+    # 每天北京时间09:30运行 (UTC 01:30) - 提前触发，抵消 GitHub Actions 排队延迟
+    - cron: '30 1 * * *'
+    # 每天北京时间15:20运行 (UTC 07:20) - 提前触发，抵消 GitHub Actions 排队延迟
+    - cron: '20 7 * * *'
   # 允许手动触发
   workflow_dispatch:
     inputs:
@@ -136,8 +136,8 @@ jobs:
         if [ "$IS_SCHEDULED" = "true" ]; then
           case "$GITHUB_EVENT_SCHEDULE" in
             '15 23 * * *') RUN_MODE="morning" ;;
-            '30 2 * * *') RUN_MODE="midday" ;;
-            '20 8 * * *') RUN_MODE="evening" ;;
+            '30 1 * * *') RUN_MODE="midday" ;;
+            '20 7 * * *') RUN_MODE="evening" ;;
             *) RUN_MODE="auto" ;;
           esac
         else

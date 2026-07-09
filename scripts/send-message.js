@@ -227,6 +227,9 @@ class ConcurrencyLimiter {
 }
 
 const apiLimiter = new ConcurrencyLimiter(5);
+// 热榜接口集中在同一第三方域名，单独降并发并错峰请求以降低 429/超时概率。
+const hotListLimiter = new ConcurrencyLimiter(2);
+const HOT_LIST_REQUEST_GAP_MS = 1200;
 
 // 获取当前时间信息
 function getCurrentTimeInfo() {
@@ -1494,7 +1497,7 @@ async function getMoyuDaily() {
       timeout: 10000
     });
 
-    if (response.data.code === 200) {
+    if (Number(response.data.code) === 200 && response.data.data) {
       return {
         success: true,
         data: response.data.data
@@ -1512,16 +1515,23 @@ async function getMoyuDaily() {
 }
 
 // 通用API获取函数 - 优化版
-async function fetchApi(url, name, params = { encoding: 'json' }) {
-  return apiLimiter.run(async () => {
+async function fetchApi(url, name, params = { encoding: 'json' }, options = {}) {
+  const {
+    limiter = apiLimiter,
+    maxRetries = 3,
+    timeout = 10000,
+    baseDelay = 1000
+  } = options;
+
+  return limiter.run(async () => {
     try {
       console.log(`正在获取${name}...`);
       const response = await axiosWithRetry({
         method: 'get',
         url: url,
         params: params,
-        timeout: 10000
-      });
+        timeout
+      }, maxRetries, baseDelay);
       
       if (response.data.code === 200) {
         return { success: true, data: response.data.data };
@@ -1535,15 +1545,22 @@ async function fetchApi(url, name, params = { encoding: 'json' }) {
   });
 }
 
-async function getWeiboHot() { return fetchApi(CONFIG.WEIBO_API, '微博热搜'); }
-async function getToutiaoHot() { return fetchApi(CONFIG.TOUTIAO_API, '头条热搜'); }
-async function getZhihuHot() { return fetchApi(CONFIG.ZHIHU_API, '知乎热榜'); }
-async function getMaoyanMovie() { return fetchApi(CONFIG.MAOYAN_MOVIE_API, '猫眼电影'); }
-async function getMaoyanTv() { return fetchApi(CONFIG.MAOYAN_TV_API, '猫眼电视'); }
-async function getMaoyanWeb() { return fetchApi(CONFIG.MAOYAN_WEB_API, '猫眼网剧'); }
-async function getDouyinHot() { return fetchApi(CONFIG.DOUYIN_API, '抖音热搜'); }
-async function getBiliHot() { return fetchApi(CONFIG.BILI_API, 'B站热搜'); }
-async function getBaiduTieba() { return fetchApi(CONFIG.BAIDU_TIEBA_API, '百度贴吧'); }
+const HOT_LIST_FETCH_OPTIONS = {
+  limiter: hotListLimiter,
+  maxRetries: 3,
+  timeout: 8000,
+  baseDelay: 2000
+};
+
+async function getWeiboHot() { return fetchApi(CONFIG.WEIBO_API, '微博热搜', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getToutiaoHot() { return fetchApi(CONFIG.TOUTIAO_API, '头条热搜', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getZhihuHot() { return fetchApi(CONFIG.ZHIHU_API, '知乎热榜', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getMaoyanMovie() { return fetchApi(CONFIG.MAOYAN_MOVIE_API, '猫眼电影', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getMaoyanTv() { return fetchApi(CONFIG.MAOYAN_TV_API, '猫眼电视', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getMaoyanWeb() { return fetchApi(CONFIG.MAOYAN_WEB_API, '猫眼网剧', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getDouyinHot() { return fetchApi(CONFIG.DOUYIN_API, '抖音热搜', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getBiliHot() { return fetchApi(CONFIG.BILI_API, 'B站热搜', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
+async function getBaiduTieba() { return fetchApi(CONFIG.BAIDU_TIEBA_API, '百度贴吧', { encoding: 'json' }, HOT_LIST_FETCH_OPTIONS); }
 
 const HOT_LIST_DEFINITIONS = [
   {
@@ -2259,6 +2276,43 @@ function validateDataIntegrity(data, name) {
 }
 
 // 构建HTML内容 - 科技感设计
+/**
+ * 兼容摸鱼日报新旧响应结构，统一整理为渲染层需要的字段。
+ *
+ * @param {object} raw 摸鱼日报接口 data 字段
+ * @returns {object} 规范化后的摸鱼日报视图数据
+ */
+function normalizeMoyuData(raw = {}) {
+  const dateInfo = raw.date || {};
+  const lunar = typeof dateInfo === 'object' ? (dateInfo.lunar || {}) : {};
+  const today = raw.today || {};
+  const progress = raw.progress || {};
+  const countdown = raw.countdown || {};
+  const nextHoliday = raw.nextHoliday || {};
+  const nextWeekend = raw.nextWeekend || {};
+
+  const dateText = typeof dateInfo === 'string'
+    ? dateInfo
+    : (dateInfo.gregorian || today.date || '');
+  const weekdayText = typeof dateInfo === 'object'
+    ? (dateInfo.weekday || today.weekday || today.week || '')
+    : (today.weekday || today.week || '');
+  const lunarText = lunar.yearCN || lunar.monthCN || lunar.dayCN || lunar.zodiac
+    ? `农历: ${lunar.yearCN || ''}${lunar.monthCN || ''}${lunar.dayCN || ''} · ${lunar.zodiac || ''}`
+    : '';
+
+  return {
+    dateText,
+    weekdayText,
+    lunarText,
+    progress,
+    countdown,
+    nextHoliday,
+    nextWeekend,
+    moyuQuote: raw.moyuQuote || raw.quote || ''
+  };
+}
+
 function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, precipitationData, alertData, luckData, historyData, rateData, goldData, silverData, fuelData, moyuData, aiNewsData, news60sData, bingData, kfcContent, hotData) {
   console.log('📝 开始构建HTML内容...');
   
@@ -2718,29 +2772,28 @@ function buildHtmlContent(timeInfo, hitokotoData, weatherData, forecastData, pre
 
   // 摸鱼日报
   if (CONFIG.SHOW_MODULES.MOYU && moyuData && moyuData.success) {
-    const m = moyuData.data;
-    const l = m.date?.lunar || {};
+    const m = normalizeMoyuData(moyuData.data);
     const nh = m.nextHoliday || {};
     const nw = m.nextWeekend || {};
     const cd = m.countdown || {};
     const p = m.progress || {};
-    
+
     // Compact Helpers
     const PB = (t, v) => `<div class="pb"><div class="pt">${t}</div><div class="pv">${v}%</div></div>`;
     const CB = (t, v, c='10b981') => `<div class="pb"><div class="pt">${t}</div><div class="pv" style="color:#${c}">${v}</div></div>`;
 
     const content = `
-      <div style="color:#94a3b8;font-size:12px;margin-bottom:8px">${m.date?.gregorian||''} · ${m.date?.weekday||''}</div>
-      <div style="color:#64748b;font-size:11px;margin-bottom:12px">农历: ${l.yearCN||''}${l.monthCN||''}${l.dayCN||''} · ${l.zodiac||''}</div>
+      <div style="color:#94a3b8;font-size:12px;margin-bottom:8px">${escapeHtml(m.dateText || '')}${m.weekdayText ? ` · ${escapeHtml(m.weekdayText)}` : ''}</div>
+      ${m.lunarText ? `<div style="color:#64748b;font-size:11px;margin-bottom:12px">${escapeHtml(m.lunarText)}</div>` : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px">${PB('本周',p.week?.percentage||0)}${PB('本月',p.month?.percentage||0)}${PB('本年',p.year?.percentage||0)}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${CB('距离周末',cd.toWeekEnd||0)}${CB('距离周五',cd.toFriday||0)}${CB('距离月末',cd.toMonthEnd||0,'f59e0b')}${CB('距离年末',cd.toYearEnd||0,'f59e0b')}</div>
       <div style="margin-top:12px;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px">
-        <div style="color:#a78bfa;font-size:12px;font-weight:bold;margin-bottom:6px">下一个节日</div><div style="color:#e2e8f0;font-size:12px">${nh.name||'暂无'} · ${nh.date||''}</div><div style="color:#94a3b8;font-size:10px">倒计时: ${nh.until||0} 天</div>
+        <div style="color:#a78bfa;font-size:12px;font-weight:bold;margin-bottom:6px">下一个节日</div><div style="color:#e2e8f0;font-size:12px">${escapeHtml(nh.name||'暂无')} · ${escapeHtml(nh.date||'')}</div><div style="color:#94a3b8;font-size:10px">倒计时: ${nh.until||0} 天</div>
       </div>
       <div style="margin-top:8px;background:rgba(255,255,255,0.05);padding:10px;border-radius:8px">
-        <div style="color:#a78bfa;font-size:12px;font-weight:bold;margin-bottom:6px">下一个周末</div><div style="color:#e2e8f0;font-size:12px">${nw.date||''} · ${nw.weekday||''}</div><div style="color:#94a3b8;font-size:10px">还剩: ${nw.daysUntil||0} 天</div>
+        <div style="color:#a78bfa;font-size:12px;font-weight:bold;margin-bottom:6px">下一个周末</div><div style="color:#e2e8f0;font-size:12px">${escapeHtml(nw.date||'')} · ${escapeHtml(nw.weekday||'')}</div><div style="color:#94a3b8;font-size:10px">还剩: ${nw.daysUntil||0} 天</div>
       </div>
-      ${m.moyuQuote?`<div style="margin-top:12px;background:rgba(255,255,255,0.05);padding:12px;border-radius:8px;color:#e2e8f0;font-size:13px;line-height:1.6">${m.moyuQuote}</div>`:''}
+      ${m.moyuQuote?`<div style="margin-top:12px;background:rgba(255,255,255,0.05);padding:12px;border-radius:8px;color:#e2e8f0;font-size:13px;line-height:1.6">${escapeHtml(m.moyuQuote)}</div>`:''}
       <style>.pb{background:rgba(255,255,255,0.05);padding:10px;border-radius:8px}.pt{color:#94a3b8;font-size:11px}.pv{color:#06b6d4;font-weight:bold;font-family:monospace}</style>
     `;
     html += genDrawer('moyu-drawer-toggle', '🐟', '摸鱼日报', content);
@@ -2947,7 +3000,7 @@ function buildDataTasks({ token, timeInfo }) {
     { key: 'gold', name: '黄金价格', enabled: CONFIG.SHOW_MODULES.GOLD, timeout: 18000, fetcher: () => getGoldPrice() },
     { key: 'silver', name: '白银数据', enabled: CONFIG.SHOW_MODULES.GOLD, timeout: 18000, fetcher: () => getSilverData() },
     { key: 'fuel', name: '汽油价格', enabled: CONFIG.SHOW_MODULES.FUEL, timeout: 18000, fetcher: () => getFuelPrice() },
-    { key: 'moyu', name: '摸鱼日报', enabled: CONFIG.SHOW_MODULES.MOYU, timeout: 12000, fetcher: () => getMoyuDaily() },
+    { key: 'moyu', name: '摸鱼日报', enabled: CONFIG.SHOW_MODULES.MOYU, timeout: 12000, validate: result => Boolean(result.data && typeof result.data === 'object' && (result.data.moyuQuote || result.data.progress || result.data.countdown)), fetcher: () => getMoyuDaily() },
     { key: 'aiNews', name: 'AI资讯', enabled: CONFIG.SHOW_MODULES.AI_NEWS, timeout: 12000, fetcher: () => getAiNews() },
     { key: 'news60s', name: '60秒读懂世界', enabled: CONFIG.SHOW_MODULES.NEWS_60S, timeout: 18000, fetcher: () => get60sNews() },
     { key: 'bing', name: 'Bing壁纸', enabled: CONFIG.SHOW_MODULES.BING_WALLPAPER, timeout: 12000, fetcher: () => getBingWallpaper() },
@@ -2957,7 +3010,7 @@ function buildDataTasks({ token, timeInfo }) {
       key: def.key,
       name: def.taskName,
       enabled: CONFIG.SHOW_MODULES.HOT_LIST[def.configKey],
-      timeout: 30000,
+      timeout: 60000,
       group: 'hotList',
       validate: result => getHotListItems(def, result).length > 0,
       fetcher: def.fetcher
@@ -2992,14 +3045,29 @@ function isTaskSuccessful(task, result) {
 
 async function runDataTasks(dataTasks) {
   const enabledTasks = dataTasks.filter(task => task.enabled);
-  const taskResults = await Promise.all(
-    enabledTasks.map(task => safeAsyncCall(task.fetcher, task.name, task.timeout))
-  );
+  const standardTasks = enabledTasks.filter(task => task.group !== 'hotList');
+  const hotListTasks = enabledTasks.filter(task => task.group === 'hotList');
   const dataResults = Object.fromEntries(dataTasks.map(task => [task.key, { success: false, skipped: true }]));
 
-  enabledTasks.forEach((task, index) => {
-    dataResults[task.key] = taskResults[index];
+  const standardResults = await Promise.all(
+    standardTasks.map(task => safeAsyncCall(task.fetcher, task.name, task.timeout))
+  );
+  standardTasks.forEach((task, index) => {
+    dataResults[task.key] = standardResults[index];
   });
+
+  if (hotListTasks.length > 0) {
+    console.log(`开始串行获取热点榜单，降低第三方接口限流概率 (${hotListTasks.length} 个平台)...`);
+  }
+
+  // 热榜都来自同一第三方域名，串行执行避免同一时刻打爆接口并避免排队时间计入任务超时。
+  for (let index = 0; index < hotListTasks.length; index++) {
+    const task = hotListTasks[index];
+    if (index > 0) {
+      await delay(HOT_LIST_REQUEST_GAP_MS);
+    }
+    dataResults[task.key] = await safeAsyncCall(task.fetcher, task.name, task.timeout);
+  }
 
   return { enabledTasks, dataResults };
 }
@@ -3034,6 +3102,7 @@ function applyRunModeModules(runMode) {
     CONFIG.SHOW_MODULES.EXCHANGE = true;
     CONFIG.SHOW_MODULES.GOLD = true;
     CONFIG.SHOW_MODULES.FUEL = true;
+    CONFIG.SHOW_MODULES.MOYU = true;
     CONFIG.SHOW_MODULES.AI_NEWS = true;
     CONFIG.SHOW_MODULES.KFC = false;
   } else if (runMode === 'evening') {
